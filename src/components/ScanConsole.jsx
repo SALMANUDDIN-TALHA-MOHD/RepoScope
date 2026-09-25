@@ -1,73 +1,66 @@
-import { motion } from "framer-motion";
+import { useState, useEffect } from "react";
 
 const lines = [
-  { text: "reposcope scan github.com/nayeli/order-service", type: "cmd" },
-  { text: "cloning repository...", type: "muted" },
-  { text: "stack detected: Node.js, Express, PostgreSQL", type: "muted" },
-  { text: "running unit tests", type: "muted" },
-  { text: "47 passed, 3 failed", type: "fail" },
-  { text: "running API tests against 12 endpoints", type: "muted" },
-  { text: "2 endpoints return stack traces on bad input", type: "warn" },
-  { text: "scanning dependencies", type: "muted" },
-  { text: "1 package with a known vulnerability (lodash)", type: "warn" },
-  { text: "scanning for exposed credentials", type: "muted" },
-  { text: "no secrets committed to history", type: "pass" },
-  { text: "report ready — 3 issues to review", type: "pass" },
+  { text: "$ reposcope analyse github.com/acme/checkout", type: "cmd" },
+  { text: "→ connecting to GitHub API...", type: "dim" },
+  { text: "→ stack: Node.js, Express, PostgreSQL", type: "purple" },
+  { text: "→ fetching 247 commits...", type: "dim" },
+  { text: "→ TDD score: 78% — strong discipline", type: "pass" },
+  { text: "→ auditing 48 dependencies...", type: "dim" },
+  { text: "→ 1 CVE: lodash@4.17.15 (HIGH)", type: "warn" },
+  { text: "→ no secrets committed to history", type: "pass" },
+  { text: "→ report ready — 2 findings to review", type: "cyan" },
 ];
 
 const colorFor = {
-  cmd: "text-mist",
-  muted: "text-mist-faint",
-  pass: "text-signal-pass",
-  warn: "text-signal-warn",
-  fail: "text-signal-fail",
-};
-
-const container = {
-  hidden: {},
-  show: {
-    transition: { staggerChildren: 0.16, delayChildren: 0.3 },
-  },
-};
-
-const line = {
-  hidden: { opacity: 0, x: -6 },
-  show: { opacity: 1, x: 0, transition: { duration: 0.25 } },
+  cmd: "#f0f0ff",
+  dim: "#2a2a40",
+  purple: "#6666aa",
+  pass: "#22c55e",
+  warn: "#f59e0b",
+  cyan: "#38bdf8",
 };
 
 export default function ScanConsole() {
+  const [visible, setVisible] = useState([]);
+
+  useEffect(() => {
+    lines.forEach((_, i) => {
+      setTimeout(() => setVisible((prev) => [...prev, i]), 300 + i * 380);
+    });
+  }, []);
+
   return (
-    <div className="relative w-full max-w-lg overflow-hidden rounded-xl border border-ink-border bg-ink-soft shadow-2xl shadow-black/40">
-      <div className="flex items-center gap-2 border-b border-ink-border px-4 py-3">
-        <span className="h-2.5 w-2.5 rounded-full bg-signal-fail/70" />
-        <span className="h-2.5 w-2.5 rounded-full bg-signal-warn/70" />
-        <span className="h-2.5 w-2.5 rounded-full bg-signal-pass/70" />
-        <span className="ml-2 font-mono text-xs text-mist-faint">
-          scan session — order-service
+    <div style={{
+      width: "100%", maxWidth: 520, overflow: "hidden",
+      borderRadius: 18, border: "1px solid rgba(255,255,255,.08)",
+      background: "#08080f",
+      boxShadow: "0 40px 100px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.06)",
+    }}>
+      {/* Title bar */}
+      <div style={{ background: "rgba(255,255,255,.04)", borderBottom: "1px solid rgba(255,255,255,.06)", padding: "14px 18px", display: "flex", alignItems: "center", gap: 7 }}>
+        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />
+        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#f59e0b", display: "inline-block" }} />
+        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
+        <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: "#33334a", marginLeft: 8 }}>
+          reposcope — analysis session
         </span>
       </div>
 
-      <motion.div
-        variants={container}
-        initial="hidden"
-        animate="show"
-        className="space-y-2 px-5 py-5 font-mono text-[13px] leading-relaxed"
-      >
+      {/* Terminal lines */}
+      <div style={{ padding: "18px", fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, lineHeight: 1.9, minHeight: 200 }}>
         {lines.map((l, i) => (
-          <motion.p key={i} variants={line} className={colorFor[l.type]}>
-            {l.type === "cmd" ? (
-              <>
-                <span className="text-signal-pass">$</span> {l.text}
-              </>
-            ) : (
-              <>
-                <span className="text-mist-faint">→ </span>
-                {l.text}
-              </>
-            )}
-          </motion.p>
+          <span key={i} style={{
+            display: "block",
+            color: colorFor[l.type],
+            opacity: visible.includes(i) ? 1 : 0,
+            transform: visible.includes(i) ? "none" : "translateX(-8px)",
+            transition: "opacity .3s, transform .3s",
+          }}>
+            {l.text}
+          </span>
         ))}
-      </motion.div>
+      </div>
     </div>
   );
 }
