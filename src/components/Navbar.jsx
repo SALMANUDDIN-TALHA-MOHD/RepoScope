@@ -1,15 +1,43 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 
 const links = [
-  { label:'How It Works',   href:'#how-it-works' },
-  { label:'What It Checks', href:'#checks' },
-  { label:'Sample Report',  href:'/sample', page:true },
+  { label:'How It Works',   anchor:'#how-it-works' },
+  { label:'What It Checks', anchor:'#checks' },
+  { label:'Sample Report',  anchor:'#sample', page:'/sample' },
 ];
 
 export default function Navbar() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  function handleLink(l) {
+    setOpen(false);
+    // If Sample Report link → navigate to /sample page
+    if (l.page) {
+      navigate(l.page);
+      return;
+    }
+    // If we're on home page, smooth scroll to anchor
+    if (location.pathname === '/') {
+      const el = document.querySelector(l.anchor);
+      if (el) el.scrollIntoView({ behavior:'smooth' });
+    } else {
+      // Navigate home then scroll
+      navigate('/');
+      setTimeout(() => {
+        const el = document.querySelector(l.anchor);
+        if (el) el.scrollIntoView({ behavior:'smooth' });
+      }, 300);
+    }
+  }
+
+  const linkStyle = {
+    fontSize:13, color:'#aaaac8', padding:'7px 13px', borderRadius:8,
+    textDecoration:'none', transition:'all .2s', whiteSpace:'nowrap',
+    background:'none', border:'none', cursor:'pointer', fontFamily:"'Space Grotesk',sans-serif",
+  };
 
   return (
     <>
@@ -22,6 +50,7 @@ export default function Navbar() {
         width:'100%',
       }}>
         <div className="rs-wrap" style={{ height:68, display:'flex', alignItems:'center', gap:6 }}>
+
           {/* Logo */}
           <button onClick={() => { navigate('/'); setOpen(false); }}
             style={{ display:'flex', alignItems:'center', gap:10, background:'none', border:'none', cursor:'pointer', padding:0, flexShrink:0 }}>
@@ -32,11 +61,11 @@ export default function Navbar() {
           {/* Desktop links */}
           <nav className="rs-nav-links" style={{ display:'flex', gap:2, marginLeft:20 }}>
             {links.map(l => (
-              <a key={l.href} href={l.page ? undefined : l.href} onClick={l.page ? () => navigate(l.href) : undefined}
-                style={{ fontSize:13, color:'#aaaac8', padding:'7px 13px', borderRadius:8, textDecoration:'none', transition:'all .2s', whiteSpace:'nowrap' }}
+              <button key={l.label} onClick={() => handleLink(l)}
+                style={linkStyle}
                 onMouseEnter={e => { e.currentTarget.style.color='#f0f0ff'; e.currentTarget.style.background='rgba(255,255,255,.07)'; }}
-                onMouseLeave={e => { e.currentTarget.style.color='#aaaac8'; e.currentTarget.style.background='transparent'; }}
-              >{l.label}</a>
+                onMouseLeave={e => { e.currentTarget.style.color='#aaaac8'; e.currentTarget.style.background='none'; }}
+              >{l.label}</button>
             ))}
           </nav>
 
@@ -46,10 +75,11 @@ export default function Navbar() {
               onMouseEnter={e => e.currentTarget.style.color='#f0f0ff'}
               onMouseLeave={e => e.currentTarget.style.color='#aaaac8'}
             >Sign In</button>
-            <a href="#scan" style={{ background:'linear-gradient(135deg,#22c55e,#38bdf8)', color:'#06060e', fontSize:13, fontWeight:700, padding:'8px 18px', borderRadius:8, textDecoration:'none', whiteSpace:'nowrap', boxShadow:'0 4px 18px rgba(34,197,94,.3)', transition:'all .22s', display:'inline-block', fontFamily:"'Space Grotesk',sans-serif" }}
+            <button onClick={() => { navigate('/'); setTimeout(() => { const el=document.querySelector('#scan'); if(el) el.scrollIntoView({behavior:'smooth'}); }, 200); }}
+              style={{ background:'linear-gradient(135deg,#22c55e,#38bdf8)', color:'#06060e', fontSize:13, fontWeight:700, padding:'8px 18px', borderRadius:8, border:'none', cursor:'pointer', whiteSpace:'nowrap', boxShadow:'0 4px 18px rgba(34,197,94,.3)', transition:'all .22s', fontFamily:"'Space Grotesk',sans-serif" }}
               onMouseEnter={e => { e.currentTarget.style.opacity='.88'; e.currentTarget.style.transform='translateY(-1px)'; e.currentTarget.style.boxShadow='0 8px 28px rgba(34,197,94,.4)'; }}
               onMouseLeave={e => { e.currentTarget.style.opacity='1'; e.currentTarget.style.transform='none'; e.currentTarget.style.boxShadow='0 4px 18px rgba(34,197,94,.3)'; }}
-            >Scan a repository</a>
+            >Scan a repository</button>
           </div>
 
           {/* Hamburger */}
@@ -66,15 +96,16 @@ export default function Navbar() {
           <div style={{ borderTop:'1px solid rgba(255,255,255,.07)', background:'rgba(6,6,14,.97)' }}>
             <div className="rs-wrap" style={{ paddingTop:16, paddingBottom:20, display:'flex', flexDirection:'column', gap:4 }}>
               {links.map(l => (
-                <a key={l.href} href={l.page ? undefined : l.href} onClick={l.page ? () => navigate(l.href) : undefined} onClick={() => setOpen(false)}
-                  style={{ display:'block', padding:'10px 0', fontSize:15, color:'#aaaac8', textDecoration:'none', borderBottom:'1px solid rgba(255,255,255,.04)', transition:'color .2s' }}
+                <button key={l.label} onClick={() => handleLink(l)}
+                  style={{ display:'block', width:'100%', textAlign:'left', padding:'10px 0', fontSize:15, color:'#aaaac8', background:'none', border:'none', borderBottom:'1px solid rgba(255,255,255,.04)', transition:'color .2s', cursor:'pointer', fontFamily:"'Space Grotesk',sans-serif" }}
                   onMouseEnter={e => e.currentTarget.style.color='#f0f0ff'}
                   onMouseLeave={e => e.currentTarget.style.color='#aaaac8'}
-                >{l.label}</a>
+                >{l.label}</button>
               ))}
-              <a href="#scan" onClick={() => setOpen(false)} style={{ marginTop:14, display:'block', textAlign:'center', background:'linear-gradient(135deg,#22c55e,#38bdf8)', color:'#06060e', fontWeight:700, fontSize:14, padding:13, borderRadius:10, textDecoration:'none', fontFamily:"'Space Grotesk',sans-serif" }}>
+              <button onClick={() => { setOpen(false); navigate('/'); setTimeout(()=>{ const el=document.querySelector('#scan'); if(el) el.scrollIntoView({behavior:'smooth'}); },200); }}
+                style={{ marginTop:14, display:'block', width:'100%', textAlign:'center', background:'linear-gradient(135deg,#22c55e,#38bdf8)', color:'#06060e', fontWeight:700, fontSize:14, padding:13, borderRadius:10, border:'none', cursor:'pointer', fontFamily:"'Space Grotesk',sans-serif" }}>
                 Scan a repository
-              </a>
+              </button>
             </div>
           </div>
         )}

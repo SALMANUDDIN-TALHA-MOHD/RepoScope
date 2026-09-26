@@ -1,26 +1,25 @@
 /**
  * routes/scan.js
- * Defines two endpoints:
- *   POST /api/scan  — accepts a GitHub repo URL, creates a scan record,
- *                     queues the analysis pipeline, returns the scan ID.
- *   GET  /api/scan/:id — returns the current status and findings for a scan.
+ * POST /api/scan  — validates URL, creates scan record, starts pipeline
+ * GET  /api/scan/:id — returns scan status and findings
  */
 
 const express = require("express");
 const { v4: uuidv4 } = require("uuid");
-const githubService = require("../services/githubService");
-const supabaseService = require("../services/supabaseService");
 const scanOrchestrator = require("../services/scanOrchestrator");
+const supabaseService = require("../services/supabaseService");
 
 const router = express.Router();
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// Always keep an in-memory store as fallback
+const memStore = {};
 
-/**
- * validateRepoUrl
- * Accepts only URLs that look like github.com/<owner>/<repo>
- * Returns { owner, repo } on success, null on failure.
- */
+const useSupabase =
+  process.env.SUPABASE_URL &&
+  process.env.SUPABASE_URL !== "https://placeholder.supabase.co" &&
+  process.env.SUPABASE_SERVICE_KEY &&
+  process.env.SUPABASE_SERVICE_KEY !== "placeholder";
+
 function validateRepoUrl(raw) {
   try {
     const url = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
@@ -33,7 +32,7 @@ function validateRepoUrl(raw) {
   }
 }
 
-// ── POST /api/scan ─────────────────────────────────────────────────────────
+// ── POST /api/scan ─────────────────────────────────────────
 router.post("/scan", async (req, res) => {
   const { repoUrl } = req.body;
 
@@ -44,56 +43,86 @@ router.post("/scan", async (req, res) => {
   const parsed = validateRepoUrl(repoUrl);
   if (!parsed) {
     return res.status(400).json({
-      error: "Invalid GitHub URL. Expected format: github.com/owner/repo",
+      error: "Invalid GitHub URL. Expected: https://github.com/owner/repo",
     });
   }
 
   const scanId = uuidv4();
 
-  // Create a scan record in Supabase with status "queued"
-  // (stubbed — will connect to real Supabase in week 4)
-  console.log(`[scan] created scan ${scanId} for ${parsed.owner}/${parsed.repo}`);
+  // Always store in memory first
+  memStore[scanId] = {
+    scanId,
+    status: "running",
+    repoUrl: `https://github.com/${parsed.owner}/${parsed.repo}`,
+    owner: parsed.owner,
+    repo: parsed.repo,
+    createdAt: new Date().toISOString(),
+    findings: [],
+  };
 
-  // Fire and forget — run the pipeline without blocking the HTTP response
+  // Try Supabase too (but don't fail if it doesn't work)
+  if (useSupabase) {
+    try {
+      await supabaseService.createScan(scanId, parsed.owner, parsed.repo);
+    } catch (err) {
+      console.error("[scan] createScan failed, using memory fallback:", err.message);
+    }
+  }
+
+  console.log(`[scan] started ${scanId} for ${parsed.owner}/${parsed.repo}`);
+
+  // Run pipeline in background
   setImmediate(async () => {
     try {
-      await scanOrchestrator.runAll(scanId, parsed.owner, parsed.repo);
+      const results = await scanOrchestrator.runAll(scanId, parsed.owner, parsed.repo);
+
+      // Always save to memory
+      memStore[scanId] = {
+        ...memStore[scanId],
+        ...results,
+        status: "complete",
+        completedAt: new Date().toISOString(),
+      };
+
+      // Try Supabase too
+      if (useSupabase) {
+        try {
+          await supabaseService.saveFindings(scanId, results);
+        } catch (dbErr) {
+          console.error("[scan] saveFindings failed (memory has results):", dbErr.message);
+        }
+      }
+
+      console.log(`[scan] ${scanId} complete`);
     } catch (err) {
       console.error(`[scan] pipeline error for ${scanId}:`, err.message);
+      memStore[scanId] = { ...memStore[scanId], status: "error", error: err.message };
     }
   });
 
-  return res.status(202).json({
-    scanId,
-    status: "queued",
-    owner: parsed.owner,
-    repo: parsed.repo,
-    message: "Scan queued. Poll GET /api/scan/:id for results.",
-  });
+  return res.status(202).json({ scanId, status: "running" });
 });
 
-// ── GET /api/scan/:id ──────────────────────────────────────────────────────
+// ── GET /api/scan/:id ──────────────────────────────────────
 router.get("/scan/:id", async (req, res) => {
   const { id } = req.params;
 
-  // Stub — returns mock data so the frontend can be developed
-  // against a real shape before Supabase is fully wired in week 4.
-  const mockResult = {
-    scanId: id,
-    status: "complete",
-    repoUrl: "github.com/example/demo-repo",
-    summary:
-      "The test suite is mostly healthy with 47 of 50 tests passing. One dependency has a known moderate-severity vulnerability with a fix available. No secrets were found in the commit history.",
-    findings: [
-      { category: "unit_test", severity: "warn", message: "3 tests failing in checkout module", file_path: "src/checkout.js", line_number: 42 },
-      { category: "dependency", severity: "warn", message: "lodash@4.17.15 — prototype pollution (CVE-2019-10744)", file_path: "package.json", line_number: null },
-      { category: "secret", severity: "pass", message: "No secrets detected in current files or commit history", file_path: null, line_number: null },
-      { category: "api_security", severity: "warn", message: "POST /checkout returns raw stack trace on invalid input", file_path: "src/routes/checkout.js", line_number: 18 },
-      { category: "tdd", severity: "pass", message: "TDD patterns detected — test commits precede code commits in 68% of features. Great work!", file_path: null, line_number: null },
-    ],
-  };
+  // Check memory first — fastest and most reliable
+  if (memStore[id]) {
+    return res.json(memStore[id]);
+  }
 
-  return res.json(mockResult);
+  // Try Supabase as fallback
+  if (useSupabase) {
+    try {
+      const scan = await supabaseService.getScanById(id);
+      if (scan) return res.json(scan);
+    } catch (err) {
+      console.error("[scan] getScanById error:", err.message);
+    }
+  }
+
+  return res.status(404).json({ error: "Scan not found" });
 });
 
 module.exports = router;

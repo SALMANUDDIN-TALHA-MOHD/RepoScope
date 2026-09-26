@@ -1,24 +1,16 @@
 /**
  * services/tddDetector.js
- * Analyses a repository's commit history to detect whether the team
- * is practising Test-Driven Development (TDD).
+ * Week 3 — TDD commit analysis.
  *
- * How it works:
- *   TDD means writing tests BEFORE the code they test.
- *   In a commit history this shows up as test-related commits
- *   appearing shortly before feature/implementation commits.
+ * Professor feedback applied:
+ * 1. Structural signal: if repo has src/ and test/ subdirectories,
+ *    changes in test areas count as test commits.
+ * 2. Returns codeCount and tddCount so frontend can display them.
  *
- *   We classify each commit as a "test commit" or a "code commit"
- *   by looking at keywords in the commit message, then calculate
- *   what percentage of features have a test commit that came first.
- *
- * Professor feedback addressed:
- *   "if there are test Commits prior to code Commits that could be
- *    an indication of TDD. You can then congratulate the repo owner
- *    for using TDD, or else encourage them to use it if it's not evident."
+ * Fetches up to 100 commits. Call with owner/repo to get more commits
+ * by changing per_page in githubService.js (max 100 per page).
  */
 
-// Keywords that strongly suggest a commit is adding or updating tests
 const TEST_KEYWORDS = [
   /\btest\b/i,
   /\bspec\b/i,
@@ -31,7 +23,6 @@ const TEST_KEYWORDS = [
   /\bwrite test/i,
 ];
 
-// Keywords that suggest a commit is adding implementation / feature code
 const CODE_KEYWORDS = [
   /\bfeat\b/i,
   /\bfeature\b/i,
@@ -42,64 +33,74 @@ const CODE_KEYWORDS = [
   /\bfix\b/i,
   /\brefactor\b/i,
   /\bupdate\b/i,
+  /\bchore\b/i,
 ];
 
-/**
- * isTestCommit
- * Returns true if the commit message contains test-related keywords.
- */
+// File path patterns that indicate test files (professor's structural signal)
+const TEST_PATH_PATTERNS = [
+  /^tests?\//i,
+  /^specs?\//i,
+  /__tests__\//i,
+  /\.test\.[jt]sx?$/,
+  /\.spec\.[jt]sx?$/,
+  /_test\.py$/,
+  /test_.*\.py$/,
+  /_spec\.rb$/,
+  /^src\/tests?\//i,
+  /^src\/specs?\//i,
+  /\/tests?\//i,
+  /conftest\.py$/,
+];
+
 function isTestCommit(message) {
   return TEST_KEYWORDS.some((re) => re.test(message));
 }
 
-/**
- * isCodeCommit
- * Returns true if the commit message contains implementation keywords
- * AND is not also a test commit (to avoid double-counting).
- */
 function isCodeCommit(message) {
   return CODE_KEYWORDS.some((re) => re.test(message)) && !isTestCommit(message);
 }
 
+function isTestFilePath(filePath) {
+  if (!filePath) return false;
+  return TEST_PATH_PATTERNS.some((pattern) => pattern.test(filePath));
+}
+
 /**
  * analyse
- * Takes the array of commits returned by githubService.fetchCommits()
- * (already sorted newest-first) and returns a finding object.
- *
- * Algorithm:
- *   - Reverse the array so we're reading oldest → newest (chronological order).
- *   - Slide a window: for each CODE commit, look back up to 5 commits
- *     to see if a TEST commit appeared before it.
- *   - Count how many code commits had a preceding test commit.
- *   - Express that as a TDD ratio.
- *
- * @param {Array<{sha, message, date, author}>} commits
- * @returns {{ category, severity, message, tddRatio, detail }}
+ * @param {Array<{sha, message, date, author}>} commits - from GitHub API (newest first)
+ * @param {Array<string>} fileTree - flat list of file paths
+ * @returns {Object} finding with tddRatio, codeCount, tddCount
  */
-function analyse(commits) {
+function analyse(commits, fileTree = []) {
   if (!commits || commits.length === 0) {
     return {
-      category: "tdd",
-      severity: "info",
-      message: "No commit history available — TDD analysis skipped.",
+      category: 'tdd',
+      severity: 'info',
       tddRatio: null,
-      detail: "The repository has no commits or the history could not be fetched.",
+      codeCount: 0,
+      tddCount: 0,
+      message: 'No commit history available. TDD analysis skipped.',
+      detail: 'The repository has no commits or the history could not be fetched.',
     };
   }
 
-  // Oldest first for chronological analysis
-  const chronological = [...commits].reverse();
+  // Structural analysis (professor suggestion #1)
+  const testFiles = fileTree.filter((p) => isTestFilePath(p));
+  const hasTestDirectory = testFiles.length > 0;
+  const testFileRatio =
+    fileTree.length > 0 ? Math.round((testFiles.length / fileTree.length) * 100) : 0;
 
+  // Chronological analysis — GitHub returns newest first, so reverse for oldest-first
+  const chronological = [...commits].reverse();
   let codeCommitCount = 0;
   let tddCommitCount = 0;
 
   for (let i = 0; i < chronological.length; i++) {
     const commit = chronological[i];
     if (!isCodeCommit(commit.message)) continue;
-
     codeCommitCount++;
 
-    // Look back up to 5 commits for a test commit that came before this one
+    // Look back up to 5 commits for a test commit
     const lookbackStart = Math.max(0, i - 5);
     const precededByTest = chronological
       .slice(lookbackStart, i)
@@ -110,44 +111,61 @@ function analyse(commits) {
 
   if (codeCommitCount === 0) {
     return {
-      category: "tdd",
-      severity: "info",
-      message: "No implementation commits detected — TDD analysis inconclusive.",
+      category: 'tdd',
+      severity: 'info',
       tddRatio: null,
-      detail: "Commit messages did not contain enough feature/implementation keywords to determine TDD usage.",
+      codeCount: 0,
+      tddCount: 0,
+      message: 'No implementation commits detected. TDD analysis inconclusive.',
+      detail:
+        'Commit messages did not contain enough implementation keywords to determine TDD usage.',
     };
   }
 
   const tddRatio = Math.round((tddCommitCount / codeCommitCount) * 100);
 
-  // ── Build the finding based on the ratio ──────────────────────────────
-  if (tddRatio >= 60) {
-    return {
-      category: "tdd",
-      severity: "pass",
-      tddRatio,
-      message: `TDD patterns detected — test commits precede code commits in ${tddRatio}% of features. Great work!`,
-      detail: `Out of ${codeCommitCount} implementation commits, ${tddCommitCount} were preceded by a test commit. This is a strong indicator of Test-Driven Development. Keep it up — TDD leads to better-designed, more maintainable code and higher confidence in every change you make.`,
-    };
-  }
+  let severity, message, detail;
 
-  if (tddRatio >= 30) {
-    return {
-      category: "tdd",
-      severity: "warn",
-      tddRatio,
-      message: `Partial TDD usage detected (${tddRatio}% of features have a test commit first).`,
-      detail: `Out of ${codeCommitCount} implementation commits, only ${tddCommitCount} were preceded by a test commit. You're on the right track! Try writing the failing test before any new function — even just one assertion — to get the full benefit of TDD.`,
-    };
+  if (tddRatio >= 60) {
+    severity = 'pass';
+    message = `TDD patterns detected. Test commits precede code commits in ${tddRatio}% of features. Great work!`;
+    detail = `Out of ${codeCommitCount} implementation commits, ${tddCommitCount} were preceded by a test commit within the five-commit lookback window. ${
+      hasTestDirectory
+        ? `The repository also has a well-structured test directory (${testFiles.length} test files, ${testFileRatio}% of all files), which is a strong structural indicator of TDD discipline.`
+        : ''
+    } Keep it up. TDD leads to better-designed, more maintainable code and higher confidence in every change you make.`;
+  } else if (tddRatio >= 30) {
+    severity = 'warn';
+    message = `Partial TDD usage detected (${tddRatio}% of features have a test commit first).`;
+    detail = `Out of ${codeCommitCount} implementation commits, only ${tddCommitCount} were preceded by a test commit. ${
+      hasTestDirectory
+        ? `The repository has a test directory present (${testFiles.length} test files), which is a good structural sign.`
+        : 'Consider organising tests into a dedicated test/ or __tests__/ directory.'
+    } Try writing the failing test before any new function to get the full benefit of TDD.`;
+  } else {
+    severity = 'info';
+    message = `TDD not detected (${tddRatio}% of features have a test commit first).`;
+    detail = `Out of ${codeCommitCount} implementation commits, only ${tddCommitCount} were preceded by a test commit. ${
+      hasTestDirectory
+        ? `While test files exist in the repository (${testFiles.length} files), they do not appear to be consistently written before the code they test.`
+        : 'No dedicated test directory was detected.'
+    } Consider trying TDD: write a failing test first, then write just enough code to make it pass.`;
   }
 
   return {
-    category: "tdd",
-    severity: "info",
+    category: 'tdd',
+    severity,
     tddRatio,
-    message: `TDD not detected (${tddRatio}% of features have a test commit first).`,
-    detail: `Out of ${codeCommitCount} implementation commits, only ${tddCommitCount} were preceded by a test commit. Consider trying TDD: write a failing test first, then write just enough code to make it pass. It leads to cleaner APIs, fewer bugs, and tests that actually document what the code is supposed to do.`,
+    codeCount: codeCommitCount,
+    tddCount: tddCommitCount,
+    message,
+    detail,
+    structuralSignal: {
+      hasTestDirectory,
+      testFileCount: testFiles.length,
+      testFileRatio,
+    },
   };
 }
 
-module.exports = { analyse };
+module.exports = { analyse, isTestCommit, isCodeCommit, isTestFilePath };

@@ -1,37 +1,52 @@
 /**
  * server.js
  * Entry point for the RepoScope Express backend.
- * Loads environment variables, sets up middleware, mounts routes,
- * and starts listening on the configured port.
  */
 
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const scanRoutes = require("./routes/scan");
+const reviewRoutes = require("./routes/reviews");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ── Middleware ─────────────────────────────────────────────────────────────
-app.use(cors({ origin: process.env.CLIENT_ORIGIN || "http://localhost:5173" }));
+// ── Middleware ─────────────────────────────────────────────
+// Allow any localhost port (5173, 5174, 5175, etc.) so Vite port changes don't break CORS
+app.use(cors({
+  origin: function(origin, callback) {
+    // Allow requests with no origin (Postman, curl) or any localhost origin
+    if (!origin || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  }
+}));
 app.use(express.json());
 
-// ── Health check ───────────────────────────────────────────────────────────
+// ── Health check ───────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    supabase: !!(process.env.SUPABASE_URL && process.env.SUPABASE_URL !== "https://placeholder.supabase.co"),
+  });
 });
 
-// ── Routes ─────────────────────────────────────────────────────────────────
+// ── Routes ─────────────────────────────────────────────────
 app.use("/api", scanRoutes);
+app.use("/api", reviewRoutes);
 
-// ── Global error handler ───────────────────────────────────────────────────
+// ── Global error handler ───────────────────────────────────
 app.use((err, _req, res, _next) => {
   console.error("[server error]", err.message);
   res.status(500).json({ error: "Internal server error" });
 });
 
-// ── Start ──────────────────────────────────────────────────────────────────
+// ── Start ──────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`RepoScope backend running on http://localhost:${PORT}`);
+  console.log(`Supabase: ${process.env.SUPABASE_URL && process.env.SUPABASE_URL !== "https://placeholder.supabase.co" ? "connected" : "using in-memory fallback"}`);
 });
