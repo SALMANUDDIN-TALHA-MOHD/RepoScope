@@ -293,7 +293,6 @@ GET /api/health
 
 ```bash
 npm run dev           # Start frontend and backend together
-npm run dev:frontend  # Frontend only — Vite on :5173
 npm run dev:backend   # Backend only — Express on :5000
 npm run build         # Production build
 ```
