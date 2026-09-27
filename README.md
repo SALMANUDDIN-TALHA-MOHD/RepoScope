@@ -38,7 +38,7 @@ Paste a public GitHub URL. RepoScope fetches up to 200 commits and every source 
 <img src="docs/screenshot-dashboard.png" alt="RepoScope dashboard — paperclipai/paperclip, 200 commits, 7807 files, 100% TDD, 60% AST" width="100%"/>
 </div>
 
-*`paperclipai/paperclip` — 200 commits analysed across 7,807 files. TDD: 100% PASS. AST coverage: 60% WARN.*
+*`paperclipai/paperclip` — 200 commits analysed across 7,814 files. TDD: 100% PASS. AST coverage: 60% WARN.*
 
 
 ---
@@ -352,9 +352,9 @@ under **Professor Yacobellis** · Fall 2026
 
 ## License
 
-MIT © 2026 Mohd Salmanuddin Talha
+MIT © SALMANUDDIN TALHA MOHD
 
-<div align="center">
+<div align="left">
 
 Open source · Loyola University Chicago · COMP 490 · Fall 2026
 
