@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/screenshot-logo.png" alt="" height="100" width="200"/>
+<img src="docs/screenshot-logo.png" alt="" height="150" width="350"/>
 
 # RepoScope
 
