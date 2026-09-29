@@ -119,7 +119,7 @@ Paste a public GitHub URL. RepoScope fetches up to 200 commits and every source 
 ## Features
 
 **200-commit analysis**
-Two full pages of GitHub commit history — up to 200 commits - for a more accurate TDD ratio than the standard 30-commit window.
+Two full pages of GitHub commit history - up to 200 commits - for a more accurate TDD ratio than the standard 30-commit window.
 
 **TDD commit detection**
 Every commit classified by keyword. Implementation: feat, fix, build, create, implement, add, update, chore. Test: test, spec, tdd, failing test, write test, add test. For each implementation commit, the engine looks back five commits for a prior test. Confirmed pairs divided by total implementation commits gives the ratio.
@@ -131,7 +131,7 @@ The full file tree is examined for `tests/`, `__tests__/`, and `specs/` director
 `@babel/parser` builds a full Abstract Syntax Tree from every JS/TS file. The walker collects `FunctionDeclaration`, `ArrowFunctionExpression`, and `ClassMethod` nodes. Python files use regex. Each name is searched across all test files. Two lists returned: tested functions and untested functions.
 
 **Cyclomatic complexity**
-Every function scored by decision-point count — `if`, `else`, `for`, `while`, `switch case`, ternary, logical operators. Score 1 to 5 is simple. Score 6 to 10 is moderate. Score 11 and above is flagged for refactoring.
+Every function scored by decision-point count - `if`, `else`, `for`, `while`, `switch case`, ternary, logical operators. Score 1 to 5 is simple. Score 6 to 10 is moderate. Score 11 and above is flagged for refactoring.
 
 **CVE audit**
 `package.json` parsed, every dependency looked up in the NVD database, any CVE returned with ID, CVSS score, affected version range, and the patch version.
