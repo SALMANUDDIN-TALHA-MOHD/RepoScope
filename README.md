@@ -24,7 +24,7 @@ Discover multiple ways to improve your repository.
 
 <br/>
 
-RepoScope is the tool developers use to understand what is actually happening inside a repository — before a release, before a code review, or before joining a new codebase.
+RepoScope is the tool developers use to understand what is actually happening inside a repository - before a release, before a code review, or before joining a new codebase.
 
 Paste a public GitHub URL. RepoScope fetches up to 200 commits and every source file, runs six analysis checks in sequence, and returns a structured report in plain English with specific advice for each finding.
 
@@ -35,10 +35,10 @@ Paste a public GitHub URL. RepoScope fetches up to 200 commits and every source 
 ## Dashboard
 
 <div align="center">
-<img src="docs/screenshot-dashboard.png" alt="RepoScope dashboard — paperclipai/paperclip, 200 commits, 7807 files, 100% TDD, 60% AST" width="100%"/>
+<img src="docs/screenshot-dashboard.png" alt="RepoScope dashboard - paperclipai/paperclip, 200 commits, 7807 files, 100% TDD, 60% AST" width="100%"/>
 </div>
 
-*`paperclipai/paperclip` — 200 commits analysed across 7,814 files. TDD: 100% PASS. AST coverage: 60% WARN.*
+*`paperclipai/paperclip` - 200 commits analysed across 7,814 files. TDD: 100% PASS. AST coverage: 60% WARN.*
 
 
 ---
@@ -119,7 +119,7 @@ Paste a public GitHub URL. RepoScope fetches up to 200 commits and every source 
 ## Features
 
 **200-commit analysis**
-Two full pages of GitHub commit history — up to 200 commits — for a more accurate TDD ratio than the standard 30-commit window.
+Two full pages of GitHub commit history — up to 200 commits - for a more accurate TDD ratio than the standard 30-commit window.
 
 **TDD commit detection**
 Every commit classified by keyword. Implementation: feat, fix, build, create, implement, add, update, chore. Test: test, spec, tdd, failing test, write test, add test. For each implementation commit, the engine looks back five commits for a prior test. Confirmed pairs divided by total implementation commits gives the ratio.
@@ -293,7 +293,7 @@ GET /api/health
 
 ```bash
 npm run dev           # Start frontend and backend together
-npm run dev:backend   # Backend only — Express on :5000
+npm run dev:backend   # Backend only - Express on :5000
 npm run build         # Production build
 ```
 
