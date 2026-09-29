@@ -245,7 +245,7 @@ Content-Type: application/json
 { "scanId": "9f14...", "status": "running" }
 ```
 
-**Poll for results** — every 1.5 seconds until `status` is `"complete"` or `"error"`
+**Poll for results** - every 1.5 seconds until `status` is `"complete"` or `"error"`
 
 ```http
 GET /api/scan/:id
@@ -336,7 +336,7 @@ CREATE TABLE reviews (
 );
 ```
 
-**Contact form** uses [Formspree](https://formspree.io) — create a free account, copy your form ID, and set `FORMSPREE_ID` in `src/components/Community.jsx`. No backend required for contact messages.
+**Contact form** uses [Formspree](https://formspree.io) - create a free account, copy your form ID, and set `FORMSPREE_ID` in `src/components/Community.jsx`. No backend required for contact messages.
 
 **Reviews** are submitted via `POST /api/reviews` and stored in the Supabase `reviews` table. The community section loads them live on page render via `GET /api/reviews`.
 
