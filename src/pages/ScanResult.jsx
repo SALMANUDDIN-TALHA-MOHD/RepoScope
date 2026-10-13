@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 
 /* ── TDD engine, mirrors backend tddDetector.js exactly ── */
 const TEST_KW = [/\btest\b/i,/\bspec\b/i,/\btdd\b/i,/\bfailing test\b/i,/\badd test/i,/\bwrite test/i,/\bunit test\b/i,/\bintegration test\b/i];
@@ -91,8 +91,6 @@ const SCAN_STEPS = [
   'Saving findings',
 ];
 
-const BACKEND = 'http://localhost:5000';
-
 function useCounter(target, dur, go) {
   const [val, setVal] = useState(0);
   useEffect(() => {
@@ -122,10 +120,30 @@ const glass = (accent) => ({
 
 const C = { green:'#22c55e', cyan:'#38bdf8', amber:'#f59e0b', purple:'#818cf8', pink:'#f472b6', muted:'#aaaac8', faint:'#44445a' };
 
+function complexityColour(score) {
+  if (score <= 5)  return C.green;
+  if (score <= 10) return C.amber;
+  return '#ef4444';
+}
+function complexityLabel(score) {
+  if (score <= 5)  return 'Simple';
+  if (score <= 10) return 'Moderate';
+  return 'Complex';
+}
+function qualityRatingColour(rating) {
+  return { excellent: C.green, good: '#4ade80', moderate: C.amber, 'needs-improvement': '#ef4444' }[rating] || C.muted;
+}
+
+const SMELL_META = {
+  'long-function':   { icon: '📏', label: 'Long Function',    colour: C.amber },
+  'too-many-params': { icon: '🔢', label: 'Too Many Params',  colour: C.amber },
+  'deep-nesting':    { icon: '🪆', label: 'Deep Nesting',     colour: '#ef4444' },
+};
+
 export default function ScanResult() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const scanUrl  = location.state?.repoUrl || 'https://github.com/facebook/react';
+  const { scanId } = useParams();
+  const scanUrl = localStorage.getItem('lastRepoUrl') || 'https://github.com/facebook/react';
 
   const [phase,       setPhase]       = useState('scanning');
   const [stepIdx,     setStepIdx]     = useState(0);
@@ -140,39 +158,58 @@ export default function ScanResult() {
   const [diagScore,   setDiagScore]   = useState(null);
   const [diagStepTxt, setDiagStepTxt] = useState('');
   const [expanded,    setExpanded]    = useState(null);
+  const [smellFilter, setSmellFilter] = useState('all');
+  const [expandedFn,  setExpandedFn]  = useState(null);
 
   const pollRef   = useRef(null);
   const stepTimer = useRef(null);
 
   /* ── Derived data from scan ── */
-  const totalFiles    = scanData?.summary?.totalFiles    ?? 0;
-  const totalCommits  = scanData?.summary?.totalCommits  ?? 0;
-  const tddFinding    = scanData?.findings?.find(f => f.category === 'tdd');
-  const unitFinding   = scanData?.findings?.find(f => f.category === 'unit_test');
+  const totalFiles    = scanData?.totalFiles    ?? scanData?.summary?.totalFiles    ?? 0;
+  const totalCommits  = scanData?.totalCommits  ?? scanData?.summary?.totalCommits  ?? 0;
+
+  /* Week 5 new API shape: tddAnalysis / astCoverage / codeQuality at top level */
+  const tddAnalysis   = scanData?.tddAnalysis   ?? null;
+  const astCoverage   = scanData?.astCoverage   ?? null;
+  const codeQuality   = scanData?.codeQuality   ?? null;
+
+  /* Backwards-compat: Week 4 used findings array */
+  const tddFinding    = tddAnalysis  ?? scanData?.findings?.find(f => f.category === 'tdd')    ?? null;
+  const unitFinding   = astCoverage  ?? scanData?.findings?.find(f => f.category === 'unit_test') ?? null;
   const recentCommits = scanData?.recentCommits ?? [];
 
-  /* TDD: prefer backend result, fall back to local re-run on all commits */
+  /* TDD derived */
   const localTDD        = recentCommits.length ? runTDD(recentCommits) : null;
   const displayRatio    = tddFinding?.tddRatio    ?? localTDD?.tddRatio    ?? 0;
-  const displayCodeCount= tddFinding?.codeCount   ?? localTDD?.codeCount   ?? 0;
-  const displayTddCount = tddFinding?.tddCount    ?? localTDD?.tddCount    ?? 0;
-  const displaySeverity = tddFinding?.severity    ?? localTDD?.severity    ?? 'info';
+  const displayCodeCount= tddFinding?.implementationCommits ?? tddFinding?.codeCount ?? localTDD?.codeCount ?? 0;
+  const displayTddCount = tddFinding?.tddPairedCommits      ?? tddFinding?.tddCount  ?? localTDD?.tddCount  ?? 0;
+  const displaySeverity = tddFinding?.category ?? tddFinding?.severity ?? localTDD?.severity ?? 'info';
   const tddColor        = displaySeverity === 'pass' ? C.green : displaySeverity === 'warn' ? C.amber : C.purple;
   const tddBadge        = displaySeverity === 'pass' ? 'PASS'  : displaySeverity === 'warn' ? 'WARN'  : 'INFO';
 
-  /* Structural signal from tddFinding */
   const structSignal = tddFinding?.structuralSignal ?? null;
 
-  /* Language detection from unitFinding message */
-  const isGoRepo    = unitFinding?.message?.toLowerCase().includes('go') || repoName_()?.toLowerCase().includes('go') || (unitFinding && !unitFinding.coverage && unitFinding.message?.includes('No'));
-  const isSupportedLang = unitFinding?.coverage != null || (unitFinding?.sourceFilesAnalysed > 0);
+  /* AST derived */
+  // When the fallback analyser ran (unsupported language), coveragePercent is 0 but meaningless.
+  // Treat it as null so the UI shows the fallback message instead of "0% coverage".
+  const _rawAstCov    = unitFinding?.coveragePercent ?? unitFinding?.coverage ?? null;
+  const astCovPct     = (unitFinding?.analyserUsed === 'fallback') ? null : _rawAstCov;
+  const testedFns     = unitFinding?.testedFunctions   ?? unitFinding?.testedFunctions   ?? [];
+  const untestedFns   = unitFinding?.untestedFunctions ?? unitFinding?.untestedFunctions ?? [];
+  const srcFiles      = unitFinding?.sourceFileCount   ?? unitFinding?.sourceFilesAnalysed ?? null;
+  const testFiles     = unitFinding?.testFileCount     ?? unitFinding?.testFilesAnalysed   ?? null;
+
+  /* Code Quality derived */
+  const smells         = codeQuality?.smells         ?? [];
+  const duplicates     = codeQuality?.duplicateBlocks ?? [];
+  const filteredSmells = smellFilter === 'all' ? smells : smells.filter(s => s.type === smellFilter);
 
   /* Counters */
-  const filesC   = useCounter(totalFiles,      1800, countersGo);
-  const commitsC = useCounter(totalCommits,    1400, countersGo);
-  const tddC     = useCounter(displayRatio,    2200, countersGo);
-  const codeC    = useCounter(displayCodeCount,1600, countersGo);
-  const pairsC   = useCounter(displayTddCount, 1800, countersGo);
+  const filesC   = useCounter(totalFiles,       1800, countersGo);
+  const commitsC = useCounter(totalCommits,     1400, countersGo);
+  const tddC     = useCounter(displayRatio,     2200, countersGo);
+  const codeC    = useCounter(displayCodeCount, 1600, countersGo);
+  const pairsC   = useCounter(displayTddCount,  1800, countersGo);
 
   useEffect(() => {
     if (phase !== 'complete') return;
@@ -195,6 +232,12 @@ export default function ScanResult() {
   const repoName = repoName_();
 
   async function startScan() {
+    if (!scanId) {
+      setErrorMsg('No scan ID found. Please start a new scan from the homepage.');
+      setPhase('error');
+      return;
+    }
+
     setStepIdx(0); setProgress(0);
     let si = 0;
     const advance = () => {
@@ -206,29 +249,14 @@ export default function ScanResult() {
     };
     stepTimer.current = setTimeout(advance, 400);
 
-    let scanId;
-    try {
-      const res = await fetch(`${BACKEND}/api/scan`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repoUrl: scanUrl }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-      scanId = (await res.json()).scanId;
-    } catch (err) {
-      clearTimeout(stepTimer.current);
-      setErrorMsg(`Could not start scan: ${err.message}. Make sure the backend is running on port 5000.`);
-      setPhase('error'); return;
-    }
-
     pollRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`${BACKEND}/api/scan/${scanId}`);
+        const res = await fetch(`/api/scan/${scanId}`);
         if (!res.ok) return;
         const data = await res.json();
         if (data.status === 'complete') {
           clearInterval(pollRef.current); clearTimeout(stepTimer.current);
           setStepIdx(SCAN_STEPS.length); setProgress(100);
-          // Show dashboard immediately — no delay
           setScanData(data); setPhase('complete');
         } else if (data.status === 'error') {
           clearInterval(pollRef.current); clearTimeout(stepTimer.current);
@@ -255,7 +283,7 @@ export default function ScanResult() {
     setDiagRunning(false); setDiagDone(true);
   }
 
-  /* TDD encouragement — changes per repo based on actual ratio */
+  /* TDD encouragement */
   const tddMsg = (() => {
     const r = displayRatio;
     const code = displayCodeCount;
@@ -264,54 +292,52 @@ export default function ScanResult() {
     if (displaySeverity === 'pass') return {
       color: C.green, bg: 'rgba(34,197,94,.08)', border: 'rgba(34,197,94,.2)',
       title: 'Strong TDD practice detected',
-      text: `${repoName} has ${r}% TDD ratio across ${code} implementation commits, with ${pairs} confirmed test-first pairs. This is above the 60% threshold for strong TDD discipline. The team consistently writes tests before code. To maintain this: keep the Red-Green-Refactor habit on every new feature and make sure new contributors follow the same pattern.`,
+      text: `${repoName} has ${r}% TDD ratio across ${code} implementation commits, with ${pairs} confirmed test-first pairs. This is above the 60% threshold for strong TDD discipline.`,
     };
     if (displaySeverity === 'warn') return {
       color: C.amber, bg: 'rgba(245,158,11,.08)', border: 'rgba(245,158,11,.2)',
       title: 'Partial TDD usage',
-      text: `${repoName} shows ${r}% TDD ratio. Out of ${code} implementation commits, ${pairs} had a test commit written within the previous 5 commits. This is above the 30% threshold but below 60%. A practical next step: pick the next feature you are about to build and write a failing test for it first, before writing any implementation code. Do this three or four times and it will become automatic.`,
+      text: `${repoName} shows ${r}% TDD ratio. Out of ${code} implementation commits, ${pairs} had a test commit written within the previous 5 commits.`,
     };
     return {
       color: C.purple, bg: 'rgba(129,140,248,.08)', border: 'rgba(129,140,248,.2)',
       title: 'TDD not detected in commit history',
-      text: `${repoName} shows ${r}% TDD ratio across ${code} implementation commits, with only ${pairs} confirmed test-first pairs. This does not mean the code is bad. It means tests are not consistently written before the implementation. A simple starting point: pick one function you are about to write. Write a test that calls it with a known input and checks the expected output. Then write the function. Commit the test first, then the function. Repeat this once per sprint.`,
+      text: `${repoName} shows ${r}% TDD ratio across ${code} implementation commits, with only ${pairs} confirmed test-first pairs.`,
     };
   })();
 
-  /* AST encouragement — changes per repo */
+  /* AST encouragement */
   const astMsg = (() => {
     if (!unitFinding) return null;
-    const cov = unitFinding.coverage;
-    const src  = unitFinding.sourceFilesAnalysed;
-    const tst  = unitFinding.testFilesAnalysed;
-    const untested = unitFinding.untestedFunctions ?? [];
+    const cov = astCovPct;
     if (cov == null) return {
       color: C.muted, bg: 'rgba(255,255,255,.04)', border: 'rgba(255,255,255,.08)',
       title: 'AST analysis note',
-      text: unitFinding.message || unitFinding.detail || 'No analysable source files found.',
+      text: unitFinding.message || unitFinding.fallbackMessage || 'No analysable source files found.',
     };
     if (cov >= 70) return {
       color: C.green, bg: 'rgba(34,197,94,.08)', border: 'rgba(34,197,94,.2)',
       title: 'Good function coverage',
-      text: `${cov}% of functions in ${repoName} are referenced in test files. Out of the ${src} source files analysed, ${tst} test files provide coverage. The ${untested.length} untested functions listed above are the next targets. Prioritise functions that handle user input or call external services, as bugs there have the highest impact.`,
+      text: `${cov}% of functions in ${repoName} are referenced in test files. The ${untestedFns.length} untested functions listed above are the next targets.`,
     };
     if (cov >= 40) return {
       color: C.amber, bg: 'rgba(245,158,11,.08)', border: 'rgba(245,158,11,.2)',
       title: 'Partial function coverage',
-      text: `${cov}% of functions in ${repoName} are referenced in test files across ${src} source files and ${tst} test files. Work through the untested list one function at a time. Start with the simplest function and write a test that calls it with a known input, then check the output matches what you expect. Covering 3 to 4 functions per week will move the percentage noticeably within a sprint.`,
+      text: `${cov}% of functions in ${repoName} are referenced in test files. Work through the untested list one function at a time.`,
     };
     return {
       color: C.purple, bg: 'rgba(129,140,248,.08)', border: 'rgba(129,140,248,.2)',
       title: 'Low function coverage detected',
-      text: `${cov}% of functions in ${repoName} are referenced in test files. ${src} source files were analysed against ${tst} test files. The ${untested.length} functions in the list above are your starting point. Pick the first one, write one test for it, commit it. Then pick the next. Even adding one test per day compounds significantly over the length of a semester.`,
+      text: `${cov}% of functions in ${repoName} are referenced in test files. Pick the first untested function, write one test for it, commit it. Repeat.`,
     };
   })();
 
   const NAV = [
     { id:'overview',    label:'Overview',      icon:'◈' },
-    { id:'tdd',         label:'TDD Detection', icon:'⬡', badge: tddBadge,    badgeColor: tddColor },
-    { id:'ast',         label:'AST Coverage',  icon:'⬟', badge: unitFinding?.severity?.toUpperCase() || 'INFO', badgeColor: unitFinding?.severity === 'pass' ? C.green : unitFinding?.severity === 'warn' ? C.amber : C.purple },
-    { id:'diagnostics', label:'Diagnostics',   icon:'⬠', badge: diagDone ? `${diagScore?.passed}/${diagScore?.total}` : null, badgeColor: diagDone && diagScore?.passed === diagScore?.total ? C.green : C.amber },
+    { id:'tdd',         label:'TDD Detection', icon:'⬡', badge: tddBadge, badgeColor: tddColor },
+    { id:'ast',         label:'AST Coverage',  icon:'⬟', badge: unitFinding ? (unitFinding.analyserUsed === 'fallback' ? 'N/A' : astCovPct != null ? (astCovPct >= 70 ? 'PASS' : astCovPct >= 40 ? 'WARN' : 'INFO') : 'INFO') : 'INFO', badgeColor: unitFinding?.analyserUsed === 'fallback' ? C.muted : astCovPct >= 70 ? C.green : astCovPct >= 40 ? C.amber : C.purple },
+    { id:'quality',     label:'Code Quality',  icon:'⬠', badge: codeQuality ? codeQuality.overallRating?.toUpperCase().replace('-',' ') : 'OFF', badgeColor: codeQuality ? qualityRatingColour(codeQuality.overallRating) : C.faint },
+    { id:'diagnostics', label:'Diagnostics',   icon:'◉', badge: diagDone ? `${diagScore?.passed}/${diagScore?.total}` : null, badgeColor: diagDone && diagScore?.passed === diagScore?.total ? C.green : C.amber },
   ];
 
   return (
@@ -415,7 +441,7 @@ export default function ScanResult() {
               })}
               <div style={{ height:1, background:'rgba(255,255,255,.06)', margin:'16px 8px' }}/>
               <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.faint, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:6, padding:'0 8px' }}>Coming soon</div>
-              {[['Code Quality','⬡','Week 5'],['Dependencies','⬟','Week 6'],['Security','⬠','Week 7'],['AI Summary','◈','Week 8']].map(([label,icon,wk]) => (
+              {[['Dependencies','⬟','Week 6'],['Security','⬠','Week 7'],['AI Summary','◈','Week 8']].map(([label,icon,wk]) => (
                 <div key={label} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px', borderRadius:10, opacity:0.4, marginBottom:2 }}>
                   <span style={{ fontSize:14, color:C.muted }}>{icon}</span>
                   <span style={{ fontSize:12, color:C.muted, flex:1 }}>{label}</span>
@@ -445,7 +471,7 @@ export default function ScanResult() {
                     { v:filesC.toLocaleString(), l:'Files scanned',    c:C.cyan,   icon:'📁' },
                     { v:commitsC,                l:'Commits analysed', c:C.purple, icon:'🔀' },
                     { v:`${tddC}%`,              l:'TDD ratio',        c:tddColor, icon:'🧪' },
-                    { v:unitFinding?.coverage!=null?`${unitFinding.coverage}%`:'N/A', l:'AST coverage', c:C.amber, icon:'📋' },
+                    { v:astCovPct!=null?`${astCovPct}%`:'N/A', l:'AST coverage', c:C.amber, icon:'📋' },
                   ].map(chip => (
                     <div key={chip.l} style={{ ...glass(chip.c), padding:'18px 16px', position:'relative', overflow:'hidden', transition:'transform .25s, box-shadow .25s', cursor:'default' }}
                       onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-3px)';e.currentTarget.style.boxShadow=`0 16px 40px ${chip.c}22`;}}
@@ -474,38 +500,82 @@ export default function ScanResult() {
                     <div style={{ fontSize:11, color:C.muted, lineHeight:1.6, marginBottom:8 }}>{tddFinding?.message?.split('.')[0] || 'Click to view full TDD analysis'}.</div>
                     {structSignal && (
                       <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:structSignal.hasTestDirectory?C.green:C.faint }}>
-                        {structSignal.hasTestDirectory ? `✓ ${structSignal.testFileCount} test files found in directory structure (${structSignal.testFileRatio}%)` : '✗ No dedicated test directory detected'}
+                        {structSignal.hasTestDirectory ? `✓ ${structSignal.testFileCount} test files found (${structSignal.testFileRatio}%)` : '✗ No dedicated test directory detected'}
                       </div>
                     )}
-                    <div style={{ fontSize:11, color:tddColor, marginTop:10 }}>View full analysis</div>
+                    <div style={{ fontSize:11, color:tddColor, marginTop:10 }}>View full analysis →</div>
                   </div>
                   <div style={{ ...glass('#38bdf8'), padding:22, cursor:'pointer', transition:'all .25s' }} onClick={() => setActiveTab('ast')}
                     onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';}} onMouseLeave={e=>{e.currentTarget.style.transform='none';}}>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14 }}>
                       <div>
                         <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:'#38bdf8', textTransform:'uppercase', letterSpacing:'.12em', marginBottom:5 }}>AST Coverage</div>
-                        <div style={{ fontSize:20, fontWeight:800, color:'#f0f0ff' }}>{unitFinding?.coverage!=null?`${unitFinding.coverage}%`:'N/A'}</div>
-                        {unitFinding?.sourceFilesAnalysed!=null && <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>{unitFinding.sourceFilesAnalysed} source files, {unitFinding.testFilesAnalysed} test files</div>}
+                        <div style={{ fontSize:20, fontWeight:800, color:'#f0f0ff' }}>{astCovPct!=null?`${astCovPct}%`:'N/A'}</div>
+                        {srcFiles!=null && <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>{srcFiles} source files, {testFiles} test files</div>}
                       </div>
-                      <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, padding:'4px 10px', borderRadius:99, background:'rgba(56,189,248,.15)', color:'#38bdf8', border:'1px solid rgba(56,189,248,.3)' }}>{unitFinding?.severity?.toUpperCase()||'INFO'}</span>
+                      <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, padding:'4px 10px', borderRadius:99, background:'rgba(56,189,248,.15)', color:'#38bdf8', border:'1px solid rgba(56,189,248,.3)' }}>{unitFinding?.analyserUsed === 'fallback' ? 'N/A' : astCovPct >= 70 ? 'PASS' : astCovPct >= 40 ? 'WARN' : 'INFO'}</span>
                     </div>
-                    {unitFinding?.untestedFunctions?.length>0 && (
+                    {untestedFns.length>0 && (
                       <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginBottom:10 }}>
-                        {unitFinding.untestedFunctions.slice(0,4).map(fn => (
+                        {untestedFns.slice(0,4).map(fn => (
                           <span key={fn} style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, padding:'2px 7px', borderRadius:5, background:'rgba(239,68,68,.1)', color:'#fca5a5', border:'1px solid rgba(239,68,68,.2)' }}>{fn}</span>
                         ))}
-                        {unitFinding.untestedFunctions.length>4 && <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, padding:'2px 7px', borderRadius:5, background:'rgba(255,255,255,.06)', color:C.muted }}>+{unitFinding.untestedFunctions.length-4} more</span>}
+                        {untestedFns.length>4 && <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, padding:'2px 7px', borderRadius:5, background:'rgba(255,255,255,.06)', color:C.muted }}>+{untestedFns.length-4} more</span>}
                       </div>
                     )}
-                    <div style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>{unitFinding?.message?.split('.')[0]||'AST function coverage analysis'}.</div>
-                    <div style={{ fontSize:11, color:'#38bdf8', marginTop:10 }}>View full analysis</div>
+                    <div style={{ fontSize:11, color:'#38bdf8', marginTop:10 }}>View full analysis →</div>
                   </div>
                 </div>
+
+                {/* Code Quality overview card — Week 5 */}
+                {codeQuality && (
+                  <div style={{ ...glass(qualityRatingColour(codeQuality.overallRating)), padding:22, marginBottom:14, cursor:'pointer', transition:'all .25s' }} onClick={() => setActiveTab('quality')}
+                    onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';}} onMouseLeave={e=>{e.currentTarget.style.transform='none';}}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14 }}>
+                      <div>
+                        <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:qualityRatingColour(codeQuality.overallRating), textTransform:'uppercase', letterSpacing:'.12em', marginBottom:5 }}>Code Quality — Week 5</div>
+                        <div style={{ fontSize:20, fontWeight:800, color:'#f0f0ff' }}>Avg complexity: {codeQuality.avgComplexity}</div>
+                        <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>
+                          {codeQuality.filesAnalysed} files · {codeQuality.totalFunctions} functions · {codeQuality.complex} complex
+                          {(codeQuality.smellCount > 0) && ` · ${codeQuality.smellCount} smell${codeQuality.smellCount !== 1 ? 's' : ''}`}
+                          {(codeQuality.duplicateCount > 0) && ` · ${codeQuality.duplicateCount} duplicate${codeQuality.duplicateCount !== 1 ? 's' : ''}`}
+                        </div>
+                      </div>
+                      <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, padding:'4px 10px', borderRadius:99, background:`${qualityRatingColour(codeQuality.overallRating)}1f`, color:qualityRatingColour(codeQuality.overallRating), border:`1px solid ${qualityRatingColour(codeQuality.overallRating)}40` }}>{codeQuality.overallRating?.toUpperCase().replace('-',' ')}</span>
+                    </div>
+                    <div style={{ display:'flex', gap:8, marginBottom:10 }}>
+                      {[{l:'Simple',c:C.green,v:codeQuality.simple},{l:'Moderate',c:C.amber,v:codeQuality.moderate},{l:'Complex',c:'#ef4444',v:codeQuality.complex}].map(b=>(
+                        <div key={b.l} style={{ flex:1, background:`${b.c}12`, border:`1px solid ${b.c}25`, borderRadius:8, padding:'8px 0', textAlign:'center' }}>
+                          <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:16, fontWeight:700, color:b.c }}>{b.v}</div>
+                          <div style={{ fontSize:10, color:C.faint, textTransform:'uppercase' }}>{b.l}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {/* Smells + duplicates summary row */}
+                    <div style={{ display:'flex', gap:8 }}>
+                      <div style={{ flex:1, background:'rgba(245,158,11,.08)', border:'1px solid rgba(245,158,11,.2)', borderRadius:8, padding:'7px 10px', display:'flex', alignItems:'center', gap:6 }}>
+                        <span style={{ fontSize:13 }}>👃</span>
+                        <div>
+                          <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:13, fontWeight:700, color:codeQuality.smellCount>0?C.amber:C.green }}>{codeQuality.smellCount ?? 0}</div>
+                          <div style={{ fontSize:9, color:C.faint, textTransform:'uppercase' }}>Code Smells</div>
+                        </div>
+                      </div>
+                      <div style={{ flex:1, background:'rgba(129,140,248,.08)', border:'1px solid rgba(129,140,248,.2)', borderRadius:8, padding:'7px 10px', display:'flex', alignItems:'center', gap:6 }}>
+                        <span style={{ fontSize:13 }}>📋</span>
+                        <div>
+                          <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:13, fontWeight:700, color:codeQuality.duplicateCount>0?C.purple:C.green }}>{codeQuality.duplicateCount ?? 0}</div>
+                          <div style={{ fontSize:9, color:C.faint, textTransform:'uppercase' }}>Duplicates</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize:11, color:qualityRatingColour(codeQuality.overallRating), marginTop:10 }}>View full analysis →</div>
+                  </div>
+                )}
+
                 <div style={{ ...glass(), padding:20 }}>
                   <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.faint, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:14 }}>Upcoming checks</div>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10 }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
                     {[
-                      { n:'Code Quality', d:'Cyclomatic complexity, smells, duplicates', c:C.purple, w:'Week 5' },
                       { n:'Dependencies', d:'CVE audit against NVD database', c:C.amber,  w:'Week 6' },
                       { n:'Security',     d:'OWASP patterns and secret detection',  c:C.pink,   w:'Week 7' },
                       { n:'AI Summary',   d:'Gemini-generated prose recommendations', c:C.cyan,  w:'Week 8' },
@@ -527,10 +597,8 @@ export default function ScanResult() {
                 <div style={{ marginBottom:24 }}>
                   <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:tddColor, textTransform:'uppercase', letterSpacing:'.16em', marginBottom:8 }}>TDD Detection</div>
                   <h1 style={{ fontSize:26, fontWeight:800, color:'#f0f0ff', letterSpacing:'-.04em', marginBottom:6 }}>Test-Driven Development</h1>
-                  <p style={{ fontSize:14, color:C.muted }}>Commit history for <strong style={{ color:'#f0f0ff' }}>{repoName}</strong> analysed chronologically. Each implementation commit triggers a lookback across the 5 preceding commits to find a prior test commit.</p>
+                  <p style={{ fontSize:14, color:C.muted }}>Commit history for <strong style={{ color:'#f0f0ff' }}>{repoName}</strong> analysed chronologically.</p>
                 </div>
-
-                {/* Big ratio card */}
                 <div style={{ ...glass(tddColor), padding:28, marginBottom:16, position:'relative', overflow:'hidden' }}>
                   <div style={{ position:'absolute', top:0, left:0, right:0, height:3, background:`linear-gradient(90deg,${tddColor},transparent)` }}/>
                   <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:24, flexWrap:'wrap', gap:16 }}>
@@ -550,20 +618,15 @@ export default function ScanResult() {
                       <div style={{ height:'100%', borderRadius:99, background:`linear-gradient(90deg,${tddColor},${tddColor}88)`, width:`${displayRatio}%`, transition:'width 2s cubic-bezier(.22,1,.36,1)', boxShadow:`0 0 12px ${tddColor}66` }}/>
                     </div>
                     <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, fontFamily:"'IBM Plex Mono',monospace", marginTop:6 }}>
-                      <span style={{ color:'#ef4444' }}>0% no TDD</span>
-                      <span style={{ color:C.amber }}>30% partial</span>
-                      <span style={{ color:C.green }}>60% good</span>
-                      <span style={{ color:'#38bdf8' }}>100%</span>
+                      <span style={{ color:'#ef4444' }}>0% no TDD</span><span style={{ color:C.amber }}>30% partial</span><span style={{ color:C.green }}>60% good</span><span style={{ color:'#38bdf8' }}>100%</span>
                     </div>
                   </div>
                 </div>
-
-                {/* Stats */}
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:16 }}>
                   {[
                     { v:commitsC, l:'Total commits fetched',   c:C.green,  tip:`All commits fetched from ${repoName}` },
-                    { v:codeC,    l:'Implementation commits',  c:C.cyan,   tip:'Commits whose message contains feat, fix, build, create, implement, add, update, or chore' },
-                    { v:pairsC,   l:'TDD pairs confirmed',     c:C.purple, tip:'Implementation commits that had at least one test commit within the 5 commits immediately before them' },
+                    { v:codeC,    l:'Implementation commits',  c:C.cyan,   tip:'Commits with feat/fix/build/create/implement/add/update/chore' },
+                    { v:pairsC,   l:'TDD pairs confirmed',     c:C.purple, tip:'Impl commits with a test commit within the 5 preceding commits' },
                   ].map(s => (
                     <div key={s.l} style={{ ...glass(), padding:'16px 18px', textAlign:'center' }}>
                       <div style={{ fontSize:32, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:s.c, marginBottom:5 }}>{s.v}</div>
@@ -572,55 +635,40 @@ export default function ScanResult() {
                     </div>
                   ))}
                 </div>
-
-                {/* Structural signal */}
                 {structSignal && (
                   <div style={{ ...glass(structSignal.hasTestDirectory?C.green:C.faint), padding:'18px 22px', marginBottom:16 }}>
                     <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:structSignal.hasTestDirectory?C.green:C.faint, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:10 }}>Directory structure signal (professor suggestion)</div>
                     <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
-                      <div style={{ background:'rgba(255,255,255,.04)', borderRadius:10, padding:'12px 14px', textAlign:'center' }}>
-                        <div style={{ fontSize:20, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:structSignal.hasTestDirectory?C.green:'#ef4444', marginBottom:4 }}>{structSignal.hasTestDirectory?'YES':'NO'}</div>
-                        <div style={{ fontSize:10, color:C.faint, textTransform:'uppercase' }}>Test directory found</div>
-                      </div>
-                      <div style={{ background:'rgba(255,255,255,.04)', borderRadius:10, padding:'12px 14px', textAlign:'center' }}>
-                        <div style={{ fontSize:20, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:C.amber, marginBottom:4 }}>{structSignal.testFileCount}</div>
-                        <div style={{ fontSize:10, color:C.faint, textTransform:'uppercase' }}>Test files in repo</div>
-                      </div>
-                      <div style={{ background:'rgba(255,255,255,.04)', borderRadius:10, padding:'12px 14px', textAlign:'center' }}>
-                        <div style={{ fontSize:20, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:C.cyan, marginBottom:4 }}>{structSignal.testFileRatio}%</div>
-                        <div style={{ fontSize:10, color:C.faint, textTransform:'uppercase' }}>Of all files are tests</div>
-                      </div>
+                      {[
+                        { v:structSignal.hasTestDirectory?'YES':'NO', l:'Test directory found', c:structSignal.hasTestDirectory?C.green:'#ef4444' },
+                        { v:structSignal.testFileCount, l:'Test files in repo', c:C.amber },
+                        { v:`${structSignal.testFileRatio}%`, l:'Of all files are tests', c:C.cyan },
+                      ].map(s=>(
+                        <div key={s.l} style={{ background:'rgba(255,255,255,.04)', borderRadius:10, padding:'12px 14px', textAlign:'center' }}>
+                          <div style={{ fontSize:20, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:s.c, marginBottom:4 }}>{s.v}</div>
+                          <div style={{ fontSize:10, color:C.faint, textTransform:'uppercase' }}>{s.l}</div>
+                        </div>
+                      ))}
                     </div>
-                    <p style={{ fontSize:12, color:'#c8d0f0', lineHeight:1.7, marginTop:12 }}>
-                      {structSignal.hasTestDirectory
-                        ? `${repoName} has ${structSignal.testFileCount} test files in its directory structure, making up ${structSignal.testFileRatio}% of all files. This is a strong structural indicator that testing is part of the development workflow, even if commit messages do not always use TDD keywords.`
-                        : `No dedicated test directory was detected in ${repoName}. Files named test_*.py, *_test.go, *.test.js, or located in test/ or __tests__/ directories were not found. Consider organising tests into a dedicated folder.`}
-                    </p>
                   </div>
                 )}
-
-                {/* Finding */}
                 <div style={{ ...glass(), padding:'18px 22px', marginBottom:16, borderLeft:`3px solid ${tddColor}` }}>
                   <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:tddColor, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:8 }}>Finding for {repoName}</div>
                   <p style={{ fontSize:14, color:'#ccd8ff', lineHeight:1.8 }}>{tddFinding?.message || `TDD ratio of ${displayRatio}% detected in ${repoName}.`}</p>
                 </div>
-
-                {/* Encouragement */}
                 {tddMsg && (
                   <div style={{ background:tddMsg.bg, border:`1px solid ${tddMsg.border}`, borderRadius:16, padding:'18px 22px', marginBottom:16 }}>
                     <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:tddMsg.color, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:6 }}>{tddMsg.title}</div>
                     <p style={{ fontSize:13, color:'#f0f0ff', lineHeight:1.85 }}>{tddMsg.text}</p>
                   </div>
                 )}
-
-                {/* Methodology */}
                 <div style={{ ...glass(), padding:'20px 24px' }}>
                   <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.faint, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:12 }}>How this detection works</div>
                   <p style={{ fontSize:13, color:'#c8d0f0', lineHeight:1.82, marginBottom:12 }}>
-                    GitHub returns commits newest-first, so RepoScope reverses the array to put the oldest commit first. For each implementation commit (feat, fix, build, create, implement, add, update, chore), it looks at the 5 commits that came immediately before it. If any of those 5 contain testing keywords (test, spec, tdd, failing test, write test, add test), the pair is recorded as a confirmed TDD cycle.
+                    GitHub returns commits newest-first, so RepoScope reverses the array to put the oldest commit first. For each implementation commit, it looks at the 5 commits that came immediately before it. If any contain testing keywords, the pair is recorded as a confirmed TDD cycle.
                   </p>
                   <p style={{ fontSize:13, color:'#c8d0f0', lineHeight:1.82 }}>
-                    Per professor feedback, the repository directory structure is also checked. The presence of <code style={{ background:'rgba(56,189,248,.1)', color:'#38bdf8', padding:'1px 6px', borderRadius:4, fontSize:12, fontFamily:"'IBM Plex Mono',monospace" }}>tests/</code>, <code style={{ background:'rgba(56,189,248,.1)', color:'#38bdf8', padding:'1px 6px', borderRadius:4, fontSize:12, fontFamily:"'IBM Plex Mono',monospace" }}>__tests__/</code>, or files matching <code style={{ background:'rgba(56,189,248,.1)', color:'#38bdf8', padding:'1px 6px', borderRadius:4, fontSize:12, fontFamily:"'IBM Plex Mono',monospace" }}>*.test.js</code> and <code style={{ background:'rgba(56,189,248,.1)', color:'#38bdf8', padding:'1px 6px', borderRadius:4, fontSize:12, fontFamily:"'IBM Plex Mono',monospace" }}>test_*.py</code> patterns acts as a structural TDD signal alongside the commit keyword analysis.
+                    Per professor feedback, the repository directory structure is also checked. The presence of <code style={{ background:'rgba(56,189,248,.1)', color:'#38bdf8', padding:'1px 6px', borderRadius:4, fontSize:12, fontFamily:"'IBM Plex Mono',monospace" }}>tests/</code>, <code style={{ background:'rgba(56,189,248,.1)', color:'#38bdf8', padding:'1px 6px', borderRadius:4, fontSize:12, fontFamily:"'IBM Plex Mono',monospace" }}>__tests__/</code>, or files matching <code style={{ background:'rgba(56,189,248,.1)', color:'#38bdf8', padding:'1px 6px', borderRadius:4, fontSize:12, fontFamily:"'IBM Plex Mono',monospace" }}>*.test.js</code> acts as a structural TDD signal.
                   </p>
                 </div>
               </div>
@@ -632,9 +680,8 @@ export default function ScanResult() {
                 <div style={{ marginBottom:24 }}>
                   <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:'#38bdf8', textTransform:'uppercase', letterSpacing:'.16em', marginBottom:8 }}>AST Coverage</div>
                   <h1 style={{ fontSize:26, fontWeight:800, color:'#f0f0ff', letterSpacing:'-.04em', marginBottom:6 }}>Function Coverage Analysis</h1>
-                  <p style={{ fontSize:14, color:C.muted }}>Source files in <strong style={{ color:'#f0f0ff' }}>{repoName}</strong> parsed with @babel/parser. Every function name extracted and cross-referenced against test files.</p>
+                  <p style={{ fontSize:14, color:C.muted }}>{unitFinding?.analyserUsed === 'fallback' ? <>Repository language detected as <strong style={{ color:C.amber }}>{unitFinding?.language || 'unknown'}</strong>. AST analysis is not yet available for this language.</> : <>Source files in <strong style={{ color:'#f0f0ff' }}>{repoName}</strong> parsed with @babel/parser. Every function name extracted and cross-referenced against test files.</>}</p>
                 </div>
-
                 {unitFinding ? (
                   <>
                     <div style={{ ...glass('#38bdf8'), padding:28, marginBottom:16, position:'relative', overflow:'hidden' }}>
@@ -642,36 +689,47 @@ export default function ScanResult() {
                       <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:22, flexWrap:'wrap', gap:12 }}>
                         <div>
                           <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:'#38bdf8', textTransform:'uppercase', letterSpacing:'.12em', marginBottom:6 }}>
-                            {unitFinding.detail?.match(/Framework detected:\s*([^.]+)/i)?.[1]?.trim() || 'Language analysis'}
+                            {unitFinding.framework || unitFinding.language || 'Language analysis'}
                           </div>
                           <div style={{ fontSize:36, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:'#38bdf8', lineHeight:1, marginBottom:4 }}>
-                            {unitFinding.coverage!=null?`${unitFinding.coverage}%`:'N/A'}
+                            {astCovPct!=null?`${astCovPct}%`:'N/A'}
                           </div>
                           <div style={{ fontSize:14, color:'#f0f0ff' }}>Function coverage for {repoName}</div>
                         </div>
                         <span style={{ padding:'8px 18px', borderRadius:99, fontSize:12, fontWeight:700, fontFamily:"'IBM Plex Mono',monospace", background:'rgba(56,189,248,.15)', color:'#38bdf8', border:'1px solid rgba(56,189,248,.3)' }}>
-                          {unitFinding.severity?.toUpperCase()||'INFO'}
+                          {unitFinding?.analyserUsed === 'fallback' ? 'N/A' : astCovPct >= 70 ? 'PASS' : astCovPct >= 40 ? 'WARN' : 'INFO'}
                         </span>
                       </div>
-                      <p style={{ fontSize:14, color:'#ccd8ff', lineHeight:1.8, marginBottom:unitFinding.coverage!=null?18:0 }}>{unitFinding.message}</p>
-                      {unitFinding.coverage!=null && (
+                      {unitFinding?.analyserUsed === 'fallback' ? (
+                        <div style={{ background:'rgba(255,255,255,.04)', border:'1px solid rgba(255,255,255,.1)', borderRadius:12, padding:'18px 20px' }}>
+                          <div style={{ fontSize:13, fontWeight:700, color:'#f0f0ff', marginBottom:8 }}>⚠️ Language not yet supported for AST analysis</div>
+                          <div style={{ fontSize:13, color:'#c8d0f0', lineHeight:1.8, marginBottom:12 }}>
+                            This repository's primary language is <strong style={{ color:C.amber }}>{unitFinding.language}</strong>. RepoScope currently supports deep AST function analysis for <strong style={{ color:C.green }}>JavaScript</strong> and <strong style={{ color:C.green }}>TypeScript</strong> only.
+                          </div>
+                          <div style={{ fontSize:12, color:C.muted, lineHeight:1.7, paddingTop:12, borderTop:'1px solid rgba(255,255,255,.07)' }}>
+                            🔭 <strong style={{ color:'#c8d0f0' }}>What we're working on:</strong> Go, Python, Java, Ruby, and Rust analysers are planned for upcoming weeks. When your language is supported, this tab will show real function-level coverage automatically — no configuration needed.
+                          </div>
+                        </div>
+                      ) : (
+                        <p style={{ fontSize:14, color:'#ccd8ff', lineHeight:1.8, marginBottom:18 }}>{unitFinding.message || unitFinding.fallbackMessage}</p>
+                      )}
+                      {astCovPct!=null && (
                         <div>
                           <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:C.muted, marginBottom:7 }}>
                             <span>Functions referenced in test files</span>
-                            <span style={{ color:'#38bdf8', fontWeight:700 }}>{unitFinding.coverage}%</span>
+                            <span style={{ color:'#38bdf8', fontWeight:700 }}>{astCovPct}%</span>
                           </div>
                           <div style={{ height:7, background:'rgba(255,255,255,.06)', borderRadius:99, overflow:'hidden' }}>
-                            <div style={{ height:'100%', borderRadius:99, background:'linear-gradient(90deg,#38bdf8,#818cf8)', width:`${unitFinding.coverage}%`, transition:'width 1.6s cubic-bezier(.22,1,.36,1)' }}/>
+                            <div style={{ height:'100%', borderRadius:99, background:'linear-gradient(90deg,#38bdf8,#818cf8)', width:`${astCovPct}%`, transition:'width 1.6s cubic-bezier(.22,1,.36,1)' }}/>
                           </div>
                         </div>
                       )}
                     </div>
-
-                    {(unitFinding.sourceFilesAnalysed!=null||unitFinding.testFilesAnalysed!=null) && (
+                    {(srcFiles!=null||testFiles!=null) && (
                       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:16 }}>
                         {[
-                          { v:unitFinding.sourceFilesAnalysed??'N/A', l:'Source files analysed', tip:'Files containing function definitions that were parsed', c:C.cyan },
-                          { v:unitFinding.testFilesAnalysed??'N/A',   l:'Test files analysed',   tip:'Files searched for function name references', c:C.green },
+                          { v:srcFiles??'N/A', l:'Source files analysed', tip:'Files containing function definitions that were parsed', c:C.cyan },
+                          { v:testFiles??'N/A', l:'Test files analysed', tip:'Files searched for function name references', c:C.green },
                         ].map(s => (
                           <div key={s.l} style={{ ...glass(), padding:'16px 18px', textAlign:'center' }}>
                             <div style={{ fontSize:28, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:s.c, marginBottom:4 }}>{s.v}</div>
@@ -681,62 +739,394 @@ export default function ScanResult() {
                         ))}
                       </div>
                     )}
-
-                    {/* Untested functions */}
-                    {unitFinding.untestedFunctions?.length>0 && (
+                    {untestedFns.length>0 && (
                       <div style={{ ...glass('#ef4444'), padding:'20px 22px', marginBottom:12 }}>
                         <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
                           <span style={{ fontSize:16 }}>❌</span>
-                          <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:'#ef4444', textTransform:'uppercase', letterSpacing:'.12em' }}>Untested functions ({unitFinding.untestedFunctions.length})</div>
+                          <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:'#ef4444', textTransform:'uppercase', letterSpacing:'.12em' }}>Untested functions ({untestedFns.length})</div>
                         </div>
-                        <p style={{ fontSize:12, color:'#fca5a5', lineHeight:1.75, marginBottom:12 }}>
-                          These {unitFinding.untestedFunctions.length} function names were found in source files of {repoName} but do not appear anywhere in the {unitFinding.testFilesAnalysed} test files analysed. Each one represents a gap in test coverage where a bug could go undetected. Start with the simplest function and add one test at a time.
-                        </p>
                         <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-                          {unitFinding.untestedFunctions.map(fn => (
+                          {untestedFns.map(fn => (
                             <span key={fn} style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:11, padding:'4px 10px', borderRadius:7, background:'rgba(239,68,68,.12)', color:'#fca5a5', border:'1px solid rgba(239,68,68,.25)' }}>{fn}</span>
                           ))}
                         </div>
                       </div>
                     )}
-
-                    {/* Tested functions */}
-                    {unitFinding.testedFunctions?.length>0 && (
+                    {testedFns.length>0 && (
                       <div style={{ ...glass('#22c55e'), padding:'20px 22px', marginBottom:12 }}>
                         <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
                           <span style={{ fontSize:16 }}>✅</span>
-                          <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:'#22c55e', textTransform:'uppercase', letterSpacing:'.12em' }}>Tested functions ({unitFinding.testedFunctions.length})</div>
+                          <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:'#22c55e', textTransform:'uppercase', letterSpacing:'.12em' }}>Tested functions ({testedFns.length})</div>
                         </div>
-                        <p style={{ fontSize:12, color:'#86efac', lineHeight:1.75, marginBottom:12 }}>
-                          These {unitFinding.testedFunctions.length} functions in {repoName} are referenced by name in at least one test file. A function appearing in a test file means a test actively calls it, mocks it, or asserts on its output — providing a safety net against regressions.
-                        </p>
                         <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-                          {unitFinding.testedFunctions.map(fn => (
+                          {testedFns.map(fn => (
                             <span key={fn} style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:11, padding:'4px 10px', borderRadius:7, background:'rgba(34,197,94,.1)', color:'#86efac', border:'1px solid rgba(34,197,94,.22)' }}>{fn}</span>
                           ))}
                         </div>
                       </div>
                     )}
-
                     {astMsg && (
                       <div style={{ background:astMsg.bg, border:`1px solid ${astMsg.border}`, borderRadius:16, padding:'18px 22px', marginBottom:16 }}>
                         <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:astMsg.color, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:6 }}>{astMsg.title}</div>
                         <p style={{ fontSize:13, color:'#f0f0ff', lineHeight:1.85 }}>{astMsg.text}</p>
                       </div>
                     )}
+                  </>
+                ) : (
+                  <div style={{ ...glass(), padding:40, textAlign:'center' }}>
+                    <div style={{ fontSize:40, marginBottom:16 }}>🔬</div>
+                    <div style={{ fontSize:16, color:'#f0f0ff', marginBottom:8 }}>No AST data available</div>
+                    <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:12, color:C.faint }}>Run: cd backend && npm install @babel/parser</div>
+                  </div>
+                )}
+              </div>
+            )}
 
-                    <div style={{ ...glass(), padding:'20px 24px' }}>
-                      <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.faint, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:14 }}>How AST analysis works</div>
-                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+            {/* ── CODE QUALITY TAB — Week 5 ── */}
+            {activeTab === 'quality' && (
+              <div style={{ animation:'slideUp .4s cubic-bezier(.22,1,.36,1)' }}>
+                <div style={{ marginBottom:24 }}>
+                  <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:C.purple, textTransform:'uppercase', letterSpacing:'.16em', marginBottom:8 }}>Code Quality · Week 5</div>
+                  <h1 style={{ fontSize:26, fontWeight:800, color:'#f0f0ff', letterSpacing:'-.04em', marginBottom:6 }}>Complexity, Smells & Duplicates</h1>
+                  <p style={{ fontSize:14, color:C.muted }}>Three independent analyses of <strong style={{ color:'#f0f0ff' }}>{repoName}</strong> — how complex the logic is, structural warning signs, and copy-pasted code blocks.</p>
+                </div>
+
+                {codeQuality ? (
+                  <>
+                    {/* ══ SECTION 1: CYCLOMATIC COMPLEXITY ══ */}
+                    <div style={{ marginBottom:8 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+                        <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:11, fontWeight:700, color:C.green, background:'rgba(34,197,94,.12)', border:'1px solid rgba(34,197,94,.25)', borderRadius:6, padding:'3px 10px' }}>① COMPLEXITY</span>
+                        <div style={{ flex:1, height:1, background:'rgba(255,255,255,.07)' }}/>
+                      </div>
+                    </div>
+
+                    {/* What is complexity — plain English banner */}
+                    <div style={{ background:'rgba(255,255,255,.03)', border:'1px solid rgba(255,255,255,.08)', borderRadius:14, padding:'14px 18px', marginBottom:12 }}>
+                      <div style={{ fontSize:12, color:'#c8d0f0', lineHeight:1.8 }}>
+                        <strong style={{ color:'#f0f0ff' }}>What is cyclomatic complexity?</strong> It counts how many different paths exist through a function. Every <code style={{ background:'rgba(56,189,248,.12)', color:'#38bdf8', padding:'1px 5px', borderRadius:4, fontFamily:"'IBM Plex Mono',monospace", fontSize:11 }}>if</code>, <code style={{ background:'rgba(56,189,248,.12)', color:'#38bdf8', padding:'1px 5px', borderRadius:4, fontFamily:"'IBM Plex Mono',monospace", fontSize:11 }}>for</code>, <code style={{ background:'rgba(56,189,248,.12)', color:'#38bdf8', padding:'1px 5px', borderRadius:4, fontFamily:"'IBM Plex Mono',monospace", fontSize:11 }}>while</code>, <code style={{ background:'rgba(56,189,248,.12)', color:'#38bdf8', padding:'1px 5px', borderRadius:4, fontFamily:"'IBM Plex Mono',monospace", fontSize:11 }}>&&</code>, <code style={{ background:'rgba(56,189,248,.12)', color:'#38bdf8', padding:'1px 5px', borderRadius:4, fontFamily:"'IBM Plex Mono',monospace", fontSize:11 }}>||</code>, ternary, or <code style={{ background:'rgba(56,189,248,.12)', color:'#38bdf8', padding:'1px 5px', borderRadius:4, fontFamily:"'IBM Plex Mono',monospace", fontSize:11 }}>catch</code> adds 1 to the score. <strong style={{ color:C.green }}>1–5 = simple</strong> (easy to read and test) · <strong style={{ color:C.amber }}>6–10 = moderate</strong> (consider splitting) · <strong style={{ color:'#ef4444' }}>11+ = complex</strong> (hard to maintain, risky).
+                      </div>
+                    </div>
+
+                    {/* Complexity summary card */}
+                    <div style={{ ...glass(qualityRatingColour(codeQuality.overallRating)), padding:24, marginBottom:12, position:'relative', overflow:'hidden' }}>
+                      <div style={{ position:'absolute', top:0, left:0, right:0, height:3, background:`linear-gradient(90deg,${qualityRatingColour(codeQuality.overallRating)},transparent)` }}/>
+                      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:18, flexWrap:'wrap', gap:12 }}>
+                        <div>
+                          <div style={{ fontSize:44, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:qualityRatingColour(codeQuality.overallRating), lineHeight:1, marginBottom:4 }}>{codeQuality.avgComplexity}</div>
+                          <div style={{ fontSize:15, color:'#f0f0ff', fontWeight:600 }}>Average complexity score</div>
+                          <div style={{ fontSize:12, color:C.muted, marginTop:3 }}>{codeQuality.filesAnalysed} files · {codeQuality.totalFunctions} functions analysed</div>
+                        </div>
+                        <span style={{ padding:'8px 20px', borderRadius:99, fontSize:13, fontWeight:700, fontFamily:"'IBM Plex Mono',monospace", background:`${qualityRatingColour(codeQuality.overallRating)}1f`, color:qualityRatingColour(codeQuality.overallRating), border:`1px solid ${qualityRatingColour(codeQuality.overallRating)}44` }}>
+                          {codeQuality.overallRating?.toUpperCase().replace('-',' ')}
+                        </span>
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
                         {[
-                          { n:'1. Fetch source files', d:`Every .js, .jsx, .ts, .tsx (JS/TS repos) or .py (Python repos) file is fetched from ${repoName} via the GitHub API.`, c:C.green },
-                          { n:'2. Parse to AST', d:'@babel/parser converts each JS/TS file into an Abstract Syntax Tree. Python files use regex extraction.', c:'#38bdf8' },
-                          { n:'3. Extract function names', d:'The tree walker collects FunctionDeclarations, ArrowFunctions, ClassMethods (JS) and def/class names (Python).', c:C.purple },
-                          { n:'4. Cross-reference tests', d:'Each function name is searched in every test file. If it appears anywhere = tested. If not = untested.', c:C.amber },
-                        ].map(s => (
-                          <div key={s.n} style={{ background:`${s.c}08`, border:`1px solid ${s.c}20`, borderRadius:10, padding:'14px 14px' }}>
-                            <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, fontWeight:700, color:s.c, marginBottom:6 }}>{s.n}</div>
-                            <div style={{ fontSize:12, color:C.muted, lineHeight:1.6 }}>{s.d}</div>
+                          { l:'Simple',   sub:'Score 1–5',   v:codeQuality.simple,   c:C.green,   tip:'Easy to read and test — no action needed' },
+                          { l:'Moderate', sub:'Score 6–10',  v:codeQuality.moderate, c:C.amber,   tip:'Consider splitting into 2–3 smaller functions' },
+                          { l:'Complex',  sub:'Score 11+',   v:codeQuality.complex,  c:'#ef4444', tip:'High risk — refactor these first' },
+                        ].map(b=>(
+                          <div key={b.l} style={{ background:`${b.c}10`, border:`1px solid ${b.c}25`, borderRadius:12, padding:'14px', textAlign:'center' }}>
+                            <div style={{ fontSize:26, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:b.c, marginBottom:2 }}>{b.v}</div>
+                            <div style={{ fontSize:12, color:'#f0f0ff', fontWeight:600, marginBottom:1 }}>{b.l}</div>
+                            <div style={{ fontSize:10, color:C.faint, marginBottom:5 }}>{b.sub}</div>
+                            <div style={{ fontSize:11, color:C.muted, lineHeight:1.4 }}>{b.tip}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Worst offenders — table with click-to-expand */}
+                    {codeQuality.complexFunctions?.length > 0 && (
+                      <div style={{ ...glass('#ef4444'), padding:'20px 22px', marginBottom:20 }}>
+                        <div style={{ marginBottom:14 }}>
+                          <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:'#ef4444', textTransform:'uppercase', letterSpacing:'.12em', marginBottom:4 }}>
+                            Most complex functions — top {Math.min(codeQuality.complexFunctions.length, 20)} to refactor first
+                          </div>
+                          <div style={{ fontSize:12, color:C.muted, lineHeight:1.6 }}>
+                            These are the functions with the highest complexity scores. <strong style={{ color:'#f0f0ff' }}>Click any row</strong> to see what the score means and how to fix it.
+                          </div>
+                        </div>
+                        {/* Table header */}
+                        <div style={{ display:'grid', gridTemplateColumns:'52px 1fr 90px 70px 80px', gap:8, padding:'6px 10px', marginBottom:4, borderBottom:'1px solid rgba(255,255,255,.07)' }}>
+                          {['Score','Function','Severity','Lines','Params'].map(h => (
+                            <div key={h} style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.faint, textTransform:'uppercase', letterSpacing:'.08em' }}>{h}</div>
+                          ))}
+                        </div>
+                        <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+                          {codeQuality.complexFunctions.map((fn, i) => {
+                            const col = complexityColour(fn.complexity);
+                            const lbl = complexityLabel(fn.complexity);
+                            const isOpen = expandedFn === i;
+                            const advice = fn.complexity >= 20
+                              ? 'This function is extremely complex. Break it into 3–5 smaller functions, each doing one thing. Add a test for each new function.'
+                              : fn.complexity >= 11
+                              ? 'This function is complex. Look for groups of logic that belong together and extract them into named helper functions.'
+                              : 'Moderate complexity. Consider extracting one or two inner blocks into separate named functions to improve readability.';
+                            return (
+                              <div key={i}>
+                                <div onClick={() => setExpandedFn(isOpen ? null : i)}
+                                  style={{ display:'grid', gridTemplateColumns:'52px 1fr 90px 70px 80px', gap:8, alignItems:'center', background: isOpen ? `${col}12` : 'rgba(255,255,255,.03)', borderRadius: isOpen ? '10px 10px 0 0' : 10, padding:'10px 10px', border:`1px solid ${isOpen ? col+'40' : col+'18'}`, cursor:'pointer', transition:'all .15s' }}>
+                                  {/* Score badge */}
+                                  <div style={{ width:40, height:40, borderRadius:8, background:`${col}18`, border:`1px solid ${col}35`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center' }}>
+                                    <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:14, fontWeight:800, color:col, lineHeight:1 }}>{fn.complexity}</span>
+                                    <span style={{ fontSize:7, color:col, opacity:.7, textTransform:'uppercase' }}>score</span>
+                                  </div>
+                                  {/* Name + file */}
+                                  <div style={{ minWidth:0 }}>
+                                    <div style={{ fontSize:13, fontWeight:600, color:'#f0f0ff', fontFamily:"'IBM Plex Mono',monospace", marginBottom:2 }}>{fn.name}()</div>
+                                    <div style={{ fontSize:10, color:C.faint, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{fn.file}</div>
+                                  </div>
+                                  {/* Severity */}
+                                  <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, padding:'3px 8px', borderRadius:99, background:`${col}18`, color:col, border:`1px solid ${col}30`, textAlign:'center', justifySelf:'start' }}>
+                                    {lbl}
+                                  </span>
+                                  {/* Lines */}
+                                  <span style={{ fontSize:12, color:C.muted, fontFamily:"'IBM Plex Mono',monospace" }}>{fn.lines ?? '—'}</span>
+                                  {/* Params + chevron */}
+                                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                                    <span style={{ fontSize:12, color:C.muted, fontFamily:"'IBM Plex Mono',monospace" }}>{fn.params ?? '—'}</span>
+                                    <span style={{ fontSize:12, color:C.faint, transition:'transform .2s', transform: isOpen ? 'rotate(180deg)' : 'none' }}>▾</span>
+                                  </div>
+                                </div>
+                                {/* Expanded detail panel */}
+                                {isOpen && (
+                                  <div style={{ background:`${col}08`, border:`1px solid ${col}30`, borderTop:'none', borderRadius:'0 0 10px 10px', padding:'14px 16px' }}>
+                                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }} className="rs-two-col">
+                                      <div style={{ background:'rgba(0,0,0,.2)', borderRadius:8, padding:'10px 14px' }}>
+                                        <div style={{ fontSize:10, color:C.faint, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:4 }}>What this score means</div>
+                                        <div style={{ fontSize:12, color:'#c8d0f0', lineHeight:1.6 }}>
+                                          A score of <strong style={{ color:col }}>{fn.complexity}</strong> means there are <strong style={{ color:col }}>{fn.complexity}</strong> independent paths through this function. A tester needs at least {fn.complexity} test cases to cover every branch.
+                                        </div>
+                                      </div>
+                                      <div style={{ background:'rgba(0,0,0,.2)', borderRadius:8, padding:'10px 14px' }}>
+                                        <div style={{ fontSize:10, color:C.faint, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:4 }}>How to fix it</div>
+                                        <div style={{ fontSize:12, color:'#c8d0f0', lineHeight:1.6 }}>{advice}</div>
+                                      </div>
+                                    </div>
+                                    <div style={{ fontSize:10, color:C.faint, fontFamily:"'IBM Plex Mono',monospace", background:'rgba(0,0,0,.25)', borderRadius:6, padding:'6px 10px' }}>
+                                      📁 {fn.file}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ══ SECTION 2: CODE SMELLS ══ */}
+                    <div style={{ marginBottom:8 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+                        <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:11, fontWeight:700, color:C.amber, background:'rgba(245,158,11,.12)', border:'1px solid rgba(245,158,11,.25)', borderRadius:6, padding:'3px 10px' }}>② CODE SMELLS</span>
+                        <div style={{ flex:1, height:1, background:'rgba(255,255,255,.07)' }}/>
+                      </div>
+                    </div>
+
+                    {/* What are smells — 3 type explanations */}
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:12 }} className="rs-three-col">
+                      {[
+                        { ...SMELL_META['long-function'],   why:'A function over 50 lines is trying to do too many things at once. Break it into smaller, focused functions — each doing one job.', rule:'> 50 lines' },
+                        { ...SMELL_META['too-many-params'], why:'More than 4 parameters makes a function hard to call correctly and nearly impossible to test all combinations of. Use an object instead.', rule:'> 4 params' },
+                        { ...SMELL_META['deep-nesting'],    why:'if/else blocks nested 4+ levels deep become impossible to follow. Extract inner blocks into named functions or use early returns.', rule:'> 3 levels deep' },
+                      ].map(m => (
+                        <div key={m.label} style={{ background:`${m.colour}08`, border:`1px solid ${m.colour}20`, borderRadius:12, padding:'14px' }}>
+                          <div style={{ fontSize:20, marginBottom:8 }}>{m.icon}</div>
+                          <div style={{ fontSize:12, fontWeight:700, color:m.colour, marginBottom:3 }}>{m.label}</div>
+                          <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.faint, marginBottom:8, background:'rgba(0,0,0,.2)', padding:'2px 6px', borderRadius:4, display:'inline-block' }}>limit: {m.rule}</div>
+                          <div style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>{m.why}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Smells card with filter */}
+                    <div style={{ ...glass(C.amber), padding:'20px 22px', marginBottom:20 }}>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14, flexWrap:'wrap', gap:10 }}>
+                        <div>
+                          <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.amber, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:4 }}>Issues found in {repoName}</div>
+                          <div style={{ fontSize:15, fontWeight:700, color: smells.length > 0 ? C.amber : C.green }}>
+                            {smells.length === 0 ? '✅ No code smells detected' : `${codeQuality.smellCount} smell${codeQuality.smellCount !== 1 ? 's' : ''} detected`}
+                          </div>
+                        </div>
+                        {smells.length > 0 && (
+                          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                            {['all','long-function','too-many-params','deep-nesting'].map(f => {
+                              const meta = SMELL_META[f];
+                              const count = f === 'all' ? smells.length : smells.filter(s => s.type === f).length;
+                              if (f !== 'all' && count === 0) return null;
+                              const active = smellFilter === f;
+                              const ac = f === 'all' ? C.amber : meta.colour;
+                              return (
+                                <button key={f} onClick={() => setSmellFilter(f)}
+                                  style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, padding:'4px 10px', borderRadius:99, border:'1px solid', cursor:'pointer', transition:'all .18s',
+                                    background: active ? ac+'25' : 'rgba(255,255,255,.05)',
+                                    color: active ? ac : C.muted,
+                                    borderColor: active ? ac+'55' : 'rgba(255,255,255,.1)',
+                                  }}>
+                                  {f === 'all' ? `All (${count})` : `${meta.icon} ${meta.label} (${count})`}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {smells.length === 0 ? (
+                        <div style={{ display:'flex', alignItems:'center', gap:12, padding:'16px 20px', background:'rgba(34,197,94,.08)', border:'1px solid rgba(34,197,94,.2)', borderRadius:12 }}>
+                          <span style={{ fontSize:24 }}>🎉</span>
+                          <div>
+                            <div style={{ fontSize:13, fontWeight:600, color:C.green }}>Clean code — no smells detected</div>
+                            <div style={{ fontSize:12, color:C.muted, marginTop:3 }}>All functions are within the 50-line limit, 4-parameter limit, and 3-nesting-level limit.</div>
+                          </div>
+                        </div>
+                      ) : filteredSmells.length === 0 ? (
+                        <div style={{ padding:'14px 18px', background:'rgba(255,255,255,.04)', border:'1px solid rgba(255,255,255,.08)', borderRadius:10, fontSize:13, color:C.muted }}>
+                          No {SMELL_META[smellFilter]?.label} smells in this repo.
+                        </div>
+                      ) : (
+                        <>
+                          {/* Table header */}
+                          <div style={{ display:'grid', gridTemplateColumns:'36px 110px 1fr 140px', gap:8, padding:'6px 10px', marginBottom:4, borderBottom:'1px solid rgba(255,255,255,.07)' }} className="rs-smell-table">
+                            {['','Type','Detail','File'].map(h => (
+                              <div key={h} style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.faint, textTransform:'uppercase', letterSpacing:'.08em' }}>{h}</div>
+                            ))}
+                          </div>
+                          <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+                            {filteredSmells.map((smell, i) => {
+                              const meta = SMELL_META[smell.type] || { icon:'⚠', label: smell.type, colour: C.amber };
+                              const smellAdvice = {
+                                'long-function': 'Break this function into smaller focused functions — aim for under 30 lines each.',
+                                'too-many-params': 'Group related parameters into a single config object: fn({ a, b, c }) instead of fn(a, b, c).',
+                                'deep-nesting': 'Use early returns (guard clauses) to flatten the nesting, or extract inner blocks into named helper functions.',
+                              }[smell.type] || 'Review and refactor this code.';
+                              const isOpenSmell = expandedFn === `s${i}`;
+                              return (
+                                <div key={i}>
+                                  <div onClick={() => setExpandedFn(isOpenSmell ? null : `s${i}`)}
+                                    style={{ display:'grid', gridTemplateColumns:'36px 110px 1fr 140px', gap:8, alignItems:'center', background: isOpenSmell ? `${meta.colour}10` : 'rgba(255,255,255,.03)', borderRadius: isOpenSmell ? '8px 8px 0 0' : 8, padding:'10px 10px', border:`1px solid ${isOpenSmell ? meta.colour+'40' : meta.colour+'18'}`, cursor:'pointer', transition:'all .15s' }} className="rs-smell-table">
+                                    <span style={{ fontSize:16 }}>{meta.icon}</span>
+                                    <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:10, padding:'2px 8px', borderRadius:99, background:`${meta.colour}18`, color:meta.colour, border:`1px solid ${meta.colour}30`, textAlign:'center', justifySelf:'start' }}>{meta.label}</span>
+                                    <span style={{ fontSize:12, color:'#f0f0ff', fontWeight:500 }}>{smell.detail}</span>
+                                    <span style={{ fontSize:10, color:C.faint, fontFamily:"'IBM Plex Mono',monospace", overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{smell.file.split('/').pop()}</span>
+                                  </div>
+                                  {isOpenSmell && (
+                                    <div style={{ background:`${meta.colour}08`, border:`1px solid ${meta.colour}30`, borderTop:'none', borderRadius:'0 0 8px 8px', padding:'12px 14px' }}>
+                                      <div style={{ fontSize:12, color:'#c8d0f0', lineHeight:1.7, marginBottom:8 }}>
+                                        <strong style={{ color:meta.colour }}>How to fix:</strong> {smellAdvice}
+                                      </div>
+                                      <div style={{ fontSize:10, color:C.faint, fontFamily:"'IBM Plex Mono',monospace", background:'rgba(0,0,0,.25)', borderRadius:5, padding:'5px 10px' }}>📁 {smell.file}</div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+
+                      {/* Summary legend */}
+                      {smells.length > 0 && (
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, marginTop:14, paddingTop:14, borderTop:'1px solid rgba(255,255,255,.07)' }}>
+                          {Object.entries(SMELL_META).map(([type, meta]) => {
+                            const count = smells.filter(s => s.type === type).length;
+                            return (
+                              <div key={type} onClick={() => setSmellFilter(smellFilter === type ? 'all' : type)}
+                                style={{ background:`${meta.colour}08`, border:`1px solid ${meta.colour}${smellFilter===type?'40':'18'}`, borderRadius:10, padding:'10px 12px', textAlign:'center', cursor:'pointer', transition:'all .18s' }}>
+                                <div style={{ fontSize:18, marginBottom:4 }}>{meta.icon}</div>
+                                <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:18, fontWeight:800, color:count > 0 ? meta.colour : C.faint }}>{count}</div>
+                                <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>{meta.label}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ══ SECTION 3: DUPLICATE BLOCKS ══ */}
+                    <div style={{ marginBottom:8 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+                        <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:11, fontWeight:700, color:C.purple, background:'rgba(129,140,248,.12)', border:'1px solid rgba(129,140,248,.25)', borderRadius:6, padding:'3px 10px' }}>③ DUPLICATE CODE</span>
+                        <div style={{ flex:1, height:1, background:'rgba(255,255,255,.07)' }}/>
+                      </div>
+                    </div>
+
+                    {/* What are duplicates — plain English banner */}
+                    <div style={{ background:'rgba(255,255,255,.03)', border:'1px solid rgba(255,255,255,.08)', borderRadius:14, padding:'14px 18px', marginBottom:12 }}>
+                      <div style={{ fontSize:12, color:'#c8d0f0', lineHeight:1.8 }}>
+                        <strong style={{ color:'#f0f0ff' }}>What are duplicate code blocks?</strong> RepoScope normalises every file (strips comments and whitespace), splits the code into overlapping 8-line windows, and fingerprints each window with an MD5 hash. If the same window appears in <strong style={{ color:C.purple }}>2 or more different files</strong>, it's flagged. This usually means logic was copy-pasted — if a bug is found in one copy, you must remember to fix <em>all</em> the others. The fix is to extract the duplicated logic into a shared function.
+                      </div>
+                    </div>
+
+                    {/* Duplicates card */}
+                    <div style={{ ...glass(C.purple), padding:'20px 22px', marginBottom:20 }}>
+                      <div style={{ marginBottom:14 }}>
+                        <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.purple, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:4 }}>Duplicate groups in {repoName}</div>
+                        <div style={{ fontSize:15, fontWeight:700, color: duplicates.length > 0 ? C.purple : C.green }}>
+                          {duplicates.length === 0 ? '✅ No duplicate blocks found' : `${codeQuality.duplicateCount} duplicate group${codeQuality.duplicateCount !== 1 ? 's' : ''} found`}
+                        </div>
+                        {duplicates.length > 0 && (
+                          <div style={{ fontSize:12, color:C.muted, marginTop:4 }}>Each group below is a block of code found in multiple files. Click to see where it appears.</div>
+                        )}
+                      </div>
+
+                      {duplicates.length === 0 ? (
+                        <div style={{ display:'flex', alignItems:'center', gap:12, padding:'16px 20px', background:'rgba(34,197,94,.08)', border:'1px solid rgba(34,197,94,.2)', borderRadius:12 }}>
+                          <span style={{ fontSize:24 }}>🎉</span>
+                          <div>
+                            <div style={{ fontSize:13, fontWeight:600, color:C.green }}>No duplicate code detected</div>
+                            <div style={{ fontSize:12, color:C.muted, marginTop:3 }}>No 8-line code blocks appear in more than one file. Good code reuse practice.</div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                          {duplicates.map((dup, i) => (
+                            <div key={dup.hash} style={{ background:'rgba(255,255,255,.03)', border:'1px solid rgba(129,140,248,.18)', borderRadius:12, overflow:'hidden' }}>
+                              {/* Header */}
+                              <div style={{ padding:'10px 14px', background:'rgba(129,140,248,.06)', borderBottom:'1px solid rgba(129,140,248,.12)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                                <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                                  <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:11, fontWeight:700, color:C.purple }}>Group {i+1}</span>
+                                  <span style={{ fontSize:11, color:C.muted }}>— this exact code appears in {dup.files.length} files</span>
+                                </div>
+                                <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.faint, background:'rgba(255,255,255,.05)', padding:'2px 8px', borderRadius:5 }}>{dup.files.length} copies</span>
+                              </div>
+                              {/* Code preview */}
+                              <div style={{ padding:'12px 14px', borderBottom:'1px solid rgba(255,255,255,.05)' }}>
+                                <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.faint, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:6 }}>Preview (first 3 lines of duplicated block)</div>
+                                <pre style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:11, color:'#c8d0f0', background:'rgba(0,0,0,.35)', borderRadius:8, padding:'10px 14px', margin:0, overflowX:'auto', lineHeight:1.7, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>{dup.preview}</pre>
+                              </div>
+                              {/* File list */}
+                              <div style={{ padding:'10px 14px' }}>
+                                <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.purple, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Found in these files — extract to a shared function to fix:</div>
+                                <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+                                  {dup.files.map(f => (
+                                    <div key={f} style={{ fontSize:11, color:'#c8d0f0', fontFamily:"'IBM Plex Mono',monospace", display:'flex', alignItems:'center', gap:8, padding:'5px 8px', background:'rgba(129,140,248,.06)', borderRadius:6 }}>
+                                      <span style={{ width:6, height:6, borderRadius:'50%', background:C.purple, flexShrink:0, display:'inline-block' }}/>
+                                      {f}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ══ How it works — compact ══ */}
+                    <div style={{ ...glass(), padding:'18px 22px' }}>
+                      <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.faint, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:12 }}>How these checks work</div>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }} className="rs-three-col">
+                        {[
+                          { icon:'🔀', label:'Complexity', colour:C.green, text:'@babel/parser builds an AST. Every branching node (if/for/while/&&/||/ternary/catch) adds 1 to the score, starting at 1.' },
+                          { icon:'👃', label:'Smells', colour:C.amber, text:'Three rules checked per function: line count > 50, parameter count > 4, and if/else nesting depth > 3 levels.' },
+                          { icon:'📋', label:'Duplicates', colour:C.purple, text:'Each file is normalised (no comments/whitespace), split into 8-line windows, MD5-hashed. Hashes appearing in 2+ files are flagged.' },
+                        ].map(m => (
+                          <div key={m.label} style={{ background:`${m.colour}08`, border:`1px solid ${m.colour}18`, borderRadius:10, padding:'12px 14px' }}>
+                            <div style={{ fontSize:16, marginBottom:6 }}>{m.icon}</div>
+                            <div style={{ fontSize:11, fontWeight:700, color:m.colour, marginBottom:6 }}>{m.label}</div>
+                            <div style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>{m.text}</div>
                           </div>
                         ))}
                       </div>
@@ -744,9 +1134,9 @@ export default function ScanResult() {
                   </>
                 ) : (
                   <div style={{ ...glass(), padding:40, textAlign:'center' }}>
-                    <div style={{ fontSize:40, marginBottom:16 }}>🔬</div>
-                    <div style={{ fontSize:16, color:'#f0f0ff', marginBottom:8 }}>AST analysis requires @babel/parser</div>
-                    <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:12, color:C.faint }}>Run: cd backend && npm install @babel/parser</div>
+                    <div style={{ fontSize:40, marginBottom:16 }}>📊</div>
+                    <div style={{ fontSize:16, color:'#f0f0ff', marginBottom:8 }}>Code Quality check is running</div>
+                    <div style={{ fontSize:13, color:C.muted, lineHeight:1.7 }}>Results will appear here once the analysis completes.</div>
                   </div>
                 )}
               </div>
@@ -760,19 +1150,17 @@ export default function ScanResult() {
                   <h1 style={{ fontSize:26, fontWeight:800, color:'#f0f0ff', letterSpacing:'-.04em', marginBottom:6 }}>Repository Analysis Report</h1>
                   <p style={{ fontSize:14, color:C.muted }}>Real stats from scanning <strong style={{ color:'#f0f0ff' }}>{repoName}</strong>, followed by 8 fixed unit tests that validate the TDD detection engine itself.</p>
                 </div>
-
-                {/* REPO-SPECIFIC STATS — these change per repository */}
                 <div style={{ ...glass(C.green), padding:24, marginBottom:16, position:'relative', overflow:'hidden' }}>
                   <div style={{ position:'absolute', top:0, left:0, right:0, height:3, background:`linear-gradient(90deg,${C.green},${C.cyan},transparent)` }}/>
                   <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.green, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:16 }}>Actual results for {repoName} — unique to this repository</div>
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:16 }}>
                     {[
-                      { l:'Commits analysed', v:totalCommits, c:C.green, tip:'Total commits fetched from GitHub API (up to 200)' },
-                      { l:'Implementation commits', v:displayCodeCount, c:C.cyan, tip:'Commits with feat/fix/build/create/implement/add/update/chore in message' },
-                      { l:'TDD pairs confirmed', v:displayTddCount, c:C.purple, tip:'Impl commits that had a test commit within the 5 preceding commits' },
-                      { l:'TDD ratio', v:`${displayRatio}%`, c:tddColor, tip:`${tddBadge}: ${displayRatio >= 60 ? 'above 60% threshold' : displayRatio >= 30 ? 'between 30-60% threshold' : 'below 30% threshold'}` },
-                      { l:'Test files found', v:structSignal?.testFileCount??0, c:C.amber, tip:'Files in test/, __tests__/, *.test.js, test_*.py patterns (structural signal)' },
-                      { l:'Test file ratio', v:`${structSignal?.testFileRatio??0}%`, c:C.pink, tip:'Percentage of all repository files that are test files' },
+                      { l:'Commits analysed',       v:totalCommits,        c:C.green,  tip:'Total commits fetched from GitHub API (up to 200)' },
+                      { l:'Implementation commits', v:displayCodeCount,    c:C.cyan,   tip:'Commits with feat/fix/build/create/implement/add/update/chore' },
+                      { l:'TDD pairs confirmed',    v:displayTddCount,     c:C.purple, tip:'Impl commits that had a test commit within the 5 preceding commits' },
+                      { l:'TDD ratio',              v:`${displayRatio}%`,  c:tddColor, tip:`${tddBadge}: ${displayRatio >= 60 ? 'above 60%' : displayRatio >= 30 ? '30–60%' : 'below 30%'} threshold` },
+                      { l:'Test files found',       v:structSignal?.testFileCount??0, c:C.amber, tip:'Files in test/, __tests__/, *.test.js, test_*.py patterns' },
+                      { l:'Test file ratio',        v:`${structSignal?.testFileRatio??0}%`, c:C.pink, tip:'Percentage of all repository files that are test files' },
                     ].map(s => (
                       <div key={s.l} style={{ background:'rgba(255,255,255,.04)', border:`1px solid ${s.c}20`, borderRadius:10, padding:'14px 14px' }}>
                         <div style={{ fontSize:24, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:s.c, marginBottom:4 }}>{s.v}</div>
@@ -781,17 +1169,15 @@ export default function ScanResult() {
                       </div>
                     ))}
                   </div>
-
-                  {/* AST stats if available */}
                   {unitFinding && (
                     <div style={{ background:'rgba(56,189,248,.06)', border:'1px solid rgba(56,189,248,.15)', borderRadius:12, padding:'14px 16px' }}>
                       <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:'#38bdf8', textTransform:'uppercase', letterSpacing:'.12em', marginBottom:10 }}>AST coverage results for {repoName}</div>
                       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8 }}>
                         {[
-                          { l:'Coverage', v:unitFinding.coverage!=null?`${unitFinding.coverage}%`:'N/A', c:'#38bdf8' },
-                          { l:'Source files', v:unitFinding.sourceFilesAnalysed??'N/A', c:C.cyan },
-                          { l:'Test files', v:unitFinding.testFilesAnalysed??'N/A', c:C.green },
-                          { l:'Untested fns', v:unitFinding.untestedFunctions?.length??'N/A', c:'#ef4444' },
+                          { l:'Coverage',    v:astCovPct!=null?`${astCovPct}%`:'N/A', c:'#38bdf8' },
+                          { l:'Source files', v:srcFiles??'N/A',            c:C.cyan },
+                          { l:'Test files',   v:testFiles??'N/A',           c:C.green },
+                          { l:'Untested fns', v:untestedFns.length,         c:'#ef4444' },
                         ].map(s => (
                           <div key={s.l} style={{ textAlign:'center' }}>
                             <div style={{ fontSize:18, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace", color:s.c, marginBottom:2 }}>{s.v}</div>
@@ -802,28 +1188,23 @@ export default function ScanResult() {
                     </div>
                   )}
                 </div>
-
-                {/* ENGINE TESTS — always the same, test the algorithm not the repo */}
                 <div style={{ ...glass(C.purple), padding:24, position:'relative', overflow:'hidden' }}>
                   <div style={{ position:'absolute', top:0, left:0, right:0, height:3, background:'linear-gradient(90deg,#6366f1,#a78bfa,transparent)' }}/>
                   <div style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:C.purple, textTransform:'uppercase', letterSpacing:'.12em', marginBottom:6 }}>Algorithm unit tests</div>
                   <div style={{ fontSize:14, fontWeight:600, color:'#f0f0ff', marginBottom:8 }}>TDD Detection Engine Tests</div>
-                  <p style={{ fontSize:13, color:C.muted, lineHeight:1.7, marginBottom:16 }}>These 8 tests validate the detection algorithm using controlled fake commit data. They are identical for every repository scan because they test whether the engine logic itself is correct, not your repository. A FAIL here means a bug in the algorithm, not a problem with your code.</p>
-
+                  <p style={{ fontSize:13, color:C.muted, lineHeight:1.7, marginBottom:16 }}>These 8 tests validate the detection algorithm using controlled fake commit data. They are identical for every repository scan because they test whether the engine logic itself is correct, not your repository.</p>
                   <button onClick={runDiag} disabled={diagRunning}
                     style={{ background:'linear-gradient(135deg,#6366f1,#a78bfa)', color:'#fff', border:'none', borderRadius:10, padding:'11px 24px', fontSize:13, fontWeight:700, cursor:diagRunning?'not-allowed':'pointer', fontFamily:"'Space Grotesk',sans-serif", display:'inline-flex', alignItems:'center', gap:8, opacity:diagRunning?0.65:1, marginBottom:diagRunning||diagRes.length?16:0, transition:'all .22s' }}
                     onMouseEnter={e=>{if(!diagRunning){e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='0 8px 24px rgba(99,102,241,.4)';}}}
                     onMouseLeave={e=>{e.currentTarget.style.transform='none';e.currentTarget.style.boxShadow='none';}}>
                     {diagRunning?'Running tests...':diagDone?'Run again':'Run diagnostics'}
                   </button>
-
                   {diagRunning && diagStepTxt && (
                     <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'rgba(99,102,241,.1)', border:'1px solid rgba(99,102,241,.2)', borderRadius:10, marginBottom:16, fontFamily:"'IBM Plex Mono',monospace", fontSize:12, color:'#c4b5fd' }}>
                       <span style={{ width:8, height:8, borderRadius:'50%', background:C.purple, display:'inline-block', animation:'pulse 1s ease-in-out infinite' }}/>
                       {diagStepTxt}
                     </div>
                   )}
-
                   {diagScore && (
                     <div style={{ display:'flex', alignItems:'center', gap:14, padding:'14px 16px', background:'rgba(255,255,255,.04)', border:'1px solid rgba(255,255,255,.07)', borderRadius:12, marginBottom:16 }}>
                       <span style={{ fontSize:20 }}>{diagScore.passed===diagScore.total?'🎉':'⚠'}</span>
@@ -834,7 +1215,6 @@ export default function ScanResult() {
                       <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:13, color:C.muted, fontWeight:700 }}>{diagScore.pct}%</span>
                     </div>
                   )}
-
                   <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                     {diagRes.map((r,i) => (
                       <div key={i} onClick={() => setExpanded(expanded===i?null:i)}
@@ -875,7 +1255,8 @@ export default function ScanResult() {
         @keyframes rpp { 0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,.5)} 70%{box-shadow:0 0 0 8px rgba(34,197,94,0)} }
         .rs-chips{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
         .rs-two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-        @media(max-width:900px){.rs-chips{grid-template-columns:repeat(2,1fr)!important}.rs-two-col{grid-template-columns:1fr!important}}
+        @media(max-width:900px){.rs-chips{grid-template-columns:repeat(2,1fr)!important}.rs-two-col{grid-template-columns:1fr!important}.rs-three-col{grid-template-columns:1fr!important}}
+        @media(max-width:700px){.rs-smell-table{grid-template-columns:36px 1fr!important}.rs-smell-table>*:nth-child(3),.rs-smell-table>*:nth-child(4){display:none}}
         @media(max-width:600px){.rs-chips{grid-template-columns:1fr!important}}
       `}</style>
     </div>

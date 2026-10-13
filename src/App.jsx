@@ -30,7 +30,6 @@ function HomePage() {
       </div>
 
       <div style={{ position:'relative', zIndex:1 }}>
-        {/* Navbar always visible — sticky top:0 in its own component */}
         <Navbar />
         <main>
           <Hero />
@@ -49,9 +48,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/"       element={<HomePage />} />
-        <Route path="/scan"   element={<ScanResult />} />
-        <Route path="/sample" element={<SampleReportPage />} />
+        <Route path="/"            element={<HomePage />} />
+        <Route path="/scan/:scanId" element={<ScanResult />} />
+        <Route path="/sample"      element={<SampleReportPage />} />
       </Routes>
     </BrowserRouter>
   );

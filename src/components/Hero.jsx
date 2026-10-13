@@ -77,6 +77,7 @@ export default function Hero() {
   const [inView,   setInView]   = useState(false);
   const [badgeVis, setBadgeVis] = useState([]);
   const [error,    setError]    = useState('');
+  const [scanning, setScanning] = useState(false);
 
   const secRef    = useRef(null);
   const timerRef  = useRef(null);
@@ -148,17 +149,37 @@ export default function Hero() {
     return () => { dead = true; clearTimeout(atomTimer.current); };
   }, [inView]);
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
     setError('');
     const raw = repoUrl.trim();
     if (!raw) { setError('Please enter a GitHub repository URL'); return; }
-    // Validate it looks like a github URL
     const cleaned = raw.replace(/^https?:\/\//, '').replace(/^github\.com\//, '');
     const parts = cleaned.split('/').filter(Boolean);
     if (parts.length < 2) { setError('Please enter a valid GitHub URL: github.com/owner/repo'); return; }
-    // Navigate to scan page with the URL
-    navigate('/scan', { state: { repoUrl: raw.startsWith('http') ? raw : `https://github.com/${cleaned}` } });
+
+    const fullUrl = raw.startsWith('http') ? raw : `https://github.com/${cleaned}`;
+
+    setScanning(true);
+    try {
+      const res = await fetch('/api/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl: fullUrl })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setError(err.error || 'Failed to start scan. Please try again.');
+        setScanning(false);
+        return;
+      }
+      const { scanId } = await res.json();
+      localStorage.setItem('lastRepoUrl', fullUrl);
+      navigate(`/scan/${scanId}`);
+    } catch {
+      setError('Could not reach the server. Is the backend running on port 5000?');
+      setScanning(false);
+    }
   }
 
   let charOffset = 0;
@@ -199,14 +220,15 @@ export default function Hero() {
                 value={repoUrl}
                 onChange={e => { setRepoUrl(e.target.value); setError(''); }}
                 placeholder="github.com/your-org/your-repo"
-                style={{ flex:1,minWidth:0,background:'rgba(255,255,255,.06)',border:`1px solid ${error?'rgba(239,68,68,.5)':'rgba(255,255,255,.08)'}`,borderRadius:9,padding:'13px 16px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:'#f0f0ff',outline:'none',transition:'all .2s' }}
+                disabled={scanning}
+                style={{ flex:1,minWidth:0,background:'rgba(255,255,255,.06)',border:`1px solid ${error?'rgba(239,68,68,.5)':'rgba(255,255,255,.08)'}`,borderRadius:9,padding:'13px 16px',fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:'#f0f0ff',outline:'none',transition:'all .2s',opacity:scanning?0.6:1 }}
                 onFocus={e => { e.target.style.borderColor='rgba(34,197,94,.5)'; e.target.style.boxShadow='0 0 0 3px rgba(34,197,94,.1)'; }}
                 onBlur={e  => { e.target.style.borderColor=error?'rgba(239,68,68,.5)':'rgba(255,255,255,.08)'; e.target.style.boxShadow='none'; }}
               />
-              <button type="submit" style={{ background:'linear-gradient(135deg,#22c55e,#38bdf8)',color:'#06060e',fontSize:14,fontWeight:700,padding:'13px 28px',borderRadius:9,border:'none',cursor:'pointer',whiteSpace:'nowrap',boxShadow:'0 4px 20px rgba(34,197,94,.35)',transition:'all .22s',flexShrink:0,fontFamily:"'Space Grotesk',sans-serif" }}
-                onMouseEnter={e => { e.currentTarget.style.opacity='.88'; e.currentTarget.style.transform='translateY(-2px)'; e.currentTarget.style.boxShadow='0 8px 32px rgba(34,197,94,.5)'; }}
-                onMouseLeave={e => { e.currentTarget.style.opacity='1'; e.currentTarget.style.transform='none'; e.currentTarget.style.boxShadow='0 4px 20px rgba(34,197,94,.35)'; }}
-              >Analyse ↗</button>
+              <button type="submit" disabled={scanning} style={{ background:'linear-gradient(135deg,#22c55e,#38bdf8)',color:'#06060e',fontSize:14,fontWeight:700,padding:'13px 28px',borderRadius:9,border:'none',cursor:scanning?'not-allowed':'pointer',whiteSpace:'nowrap',boxShadow:'0 4px 20px rgba(34,197,94,.35)',transition:'all .22s',flexShrink:0,fontFamily:"'Space Grotesk',sans-serif",opacity:scanning?0.7:1 }}
+                onMouseEnter={e => { if(!scanning){e.currentTarget.style.opacity='.88'; e.currentTarget.style.transform='translateY(-2px)'; e.currentTarget.style.boxShadow='0 8px 32px rgba(34,197,94,.5)';} }}
+                onMouseLeave={e => { e.currentTarget.style.opacity=scanning?'0.7':'1'; e.currentTarget.style.transform='none'; e.currentTarget.style.boxShadow='0 4px 20px rgba(34,197,94,.35)'; }}
+              >{scanning ? 'Starting…' : 'Analyse ↗'}</button>
             </form>
             {error && <p style={{ fontFamily:"'IBM Plex Mono',monospace",fontSize:11,color:'#ef4444',marginBottom:6 }}>{error}</p>}
             <p style={{ fontFamily:"'IBM Plex Mono',monospace",fontSize:11,color:'#44445a',opacity:0,animation:'fu .6s 1.2s forwards' }}>

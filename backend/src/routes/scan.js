@@ -48,12 +48,13 @@ router.post("/scan", async (req, res) => {
   }
 
   const scanId = uuidv4();
+  const fullRepoUrl = `https://github.com/${parsed.owner}/${parsed.repo}`;
 
   // Always store in memory first
   memStore[scanId] = {
     scanId,
     status: "running",
-    repoUrl: `https://github.com/${parsed.owner}/${parsed.repo}`,
+    repoUrl: fullRepoUrl,
     owner: parsed.owner,
     repo: parsed.repo,
     createdAt: new Date().toISOString(),
@@ -74,12 +75,14 @@ router.post("/scan", async (req, res) => {
   // Run pipeline in background
   setImmediate(async () => {
     try {
-      const results = await scanOrchestrator.runAll(scanId, parsed.owner, parsed.repo);
+      // orchestrateScan takes the full repo URL and returns the complete results object
+      const results = await scanOrchestrator.orchestrateScan(fullRepoUrl);
 
       // Always save to memory
       memStore[scanId] = {
         ...memStore[scanId],
         ...results,
+        scanId,          // keep original scanId
         status: "complete",
         completedAt: new Date().toISOString(),
       };

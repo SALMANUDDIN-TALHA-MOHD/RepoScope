@@ -1,193 +1,170 @@
 /**
- * services/testAnalyser.js
- * Week 4 - AST-based test coverage analysis.
+ * testAnalyser.js  —  AST Test Coverage Coordinator (Week 5 refactor)
  *
- * Supports: JavaScript, TypeScript, Python (basic), Ruby (basic)
- * Uses @babel/parser for JS/TS AST analysis.
+ * This file is now a thin coordinator. It no longer contains language-specific
+ * parsing logic directly. Instead it:
+ *   1. Loads all language modules from ./analysers/
+ *   2. Picks the first one whose canHandle() returns true for the repo's file tree
+ *   3. Falls back to fallback.js if no dedicated module matches (graceful degradation)
+ *
+ * Adding a new language in the future = drop one file in ./analysers/.
+ * Nothing else needs to change.
  */
 
-let babelParser = null;
-try {
-  babelParser = require('@babel/parser');
-} catch (_) {
-  console.warn('[testAnalyser] @babel/parser not installed. Run: cd backend && npm install @babel/parser');
-}
+const path = require('path');
 
-const FRAMEWORK_SIGNALS = [
-  { name: 'jest',    files: ['jest.config.js', 'jest.config.ts', 'jest.config.mjs'] },
-  { name: 'vitest',  files: ['vitest.config.js', 'vitest.config.ts', 'vite.config.js', 'vite.config.ts'] },
-  { name: 'mocha',   files: ['.mocharc.js', '.mocharc.yml', '.mocharc.json', '.mocharc.cjs'] },
-  { name: 'pytest',  files: ['pytest.ini', 'setup.cfg', 'pyproject.toml', 'conftest.py'] },
-  { name: 'jasmine', files: ['jasmine.json', '.jasmine.json'] },
-  { name: 'unittest', files: ['unittest.cfg'] },
+// ── Load language modules in priority order ──────────────────────────────────
+// The coordinator tries them in this order. The FIRST one whose canHandle()
+// returns true is used. fallback.js is always last (its canHandle returns true).
+const ANALYSERS = [
+  require('./analysers/javascript'),
+  require('./analysers/python'),
+  require('./analysers/fallback')   // catch-all — must be last
 ];
 
-function detectTestFramework(fileTree) {
-  if (!fileTree || !fileTree.length) return 'unknown';
-  const lower = fileTree.map(f => f.toLowerCase());
-  for (const fw of FRAMEWORK_SIGNALS) {
-    for (const signal of fw.files) {
-      if (lower.some(f => f === signal || f.endsWith('/' + signal))) return fw.name;
-    }
-  }
-  // Detect Python repos
-  const hasPy = fileTree.some(f => f.endsWith('.py'));
-  if (hasPy) return 'pytest';
-  const hasTestDir = fileTree.some(f => /^tests?\//i.test(f) || /__tests__\//i.test(f));
-  return hasTestDir ? 'unknown-js' : 'unknown';
-}
+// ── Test framework detection ─────────────────────────────────────────────────
 
-// JS/TS file patterns
-const JS_EXTENSIONS = ['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs'];
-const PY_EXTENSIONS = ['.py'];
-const TEST_PATH_PATTERNS = [
-  /^tests?\//i, /^specs?\//i, /__tests__\//i,
-  /\.test\.[jt]sx?$/, /\.spec\.[jt]sx?$/,
-  /\/tests?\//i, /\/specs?\//i,
-  /test_.*\.py$/, /.*_test\.py$/,
-  /conftest\.py$/,
-];
-
-function isTestFile(path) { return TEST_PATH_PATTERNS.some(re => re.test(path)); }
-function isJsSourceFile(path) { return JS_EXTENSIONS.some(ext => path.endsWith(ext)) && !isTestFile(path); }
-function isPySourceFile(path) { return PY_EXTENSIONS.some(ext => path.endsWith(ext)) && !isTestFile(path); }
-
-const BABEL_OPTIONS = {
-  sourceType: 'unambiguous',
-  allowImportExportEverywhere: true,
-  allowReturnOutsideFunction: true,
-  allowSuperOutsideMethod: true,
-  errorRecovery: true,
-  plugins: ['jsx','typescript','decorators-legacy','classProperties','classPrivateProperties','classPrivateMethods','dynamicImport','optionalChaining','nullishCoalescingOperator'],
+const FRAMEWORK_SIGNATURES = {
+  jest:   ['jest.config.js', 'jest.config.ts', 'jest.config.mjs'],
+  vitest: ['vitest.config.js', 'vitest.config.ts', 'vite.config.js'],
+  mocha:  ['.mocharc.js', '.mocharc.yml', '.mocharc.json', 'mocha.opts'],
+  pytest: ['pytest.ini', 'pyproject.toml', 'setup.cfg', 'conftest.py'],
+  jasmine:['jasmine.json', '.jasmine.json']
 };
 
-function parseSourceFile(content) {
-  if (!babelParser || !content || content.length > 500_000) return [];
-  let ast;
-  try { ast = babelParser.parse(content, BABEL_OPTIONS); } catch (_) { return []; }
-  const names = new Set();
-  function walk(node) {
-    if (!node || typeof node !== 'object') return;
-    if (node.type === 'FunctionDeclaration' && node.id?.name) names.add(node.id.name);
-    if ((node.type === 'VariableDeclarator') && node.id?.type === 'Identifier' &&
-        (node.init?.type === 'ArrowFunctionExpression' || node.init?.type === 'FunctionExpression'))
-      names.add(node.id.name);
-    if (node.type === 'ClassMethod' && node.key?.name && node.key.name !== 'constructor')
-      names.add(node.key.name);
-    if (node.type === 'ExportNamedDeclaration' && node.declaration) { walk(node.declaration); return; }
-    for (const key of Object.keys(node)) {
-      if (['type','start','end','loc'].includes(key)) continue;
-      const child = node[key];
-      if (Array.isArray(child)) child.forEach(walk);
-      else if (child && typeof child === 'object' && child.type) walk(child);
+function detectTestFramework(fileTree) {
+  for (const [framework, files] of Object.entries(FRAMEWORK_SIGNATURES)) {
+    if (files.some(sig => fileTree.some(f => f.endsWith(sig)))) {
+      return framework;
     }
   }
-  walk(ast.program);
-  return [...names];
+  return 'unknown';
 }
 
-// Python: extract function/class names with regex (no full AST needed)
-function parsePythonFile(content) {
-  if (!content) return [];
-  const names = new Set();
-  const fnRe  = /^def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/gm;
-  const clsRe = /^class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[:(]/gm;
-  let m;
-  while ((m = fnRe.exec(content)) !== null) { if (!m[1].startsWith('_')) names.add(m[1]); }
-  while ((m = clsRe.exec(content)) !== null) names.add(m[1]);
-  return [...names];
+// ── Language detection helper ────────────────────────────────────────────────
+
+/**
+ * Counts file extensions in the tree and returns the primary language name.
+ * Used for display purposes on the dashboard.
+ */
+function detectLanguage(fileTree) {
+  const counts = {};
+  for (const f of fileTree) {
+    const ext = path.extname(f).toLowerCase();
+    if (!ext) continue;
+    counts[ext] = (counts[ext] || 0) + 1;
+  }
+
+  // Sort extensions by frequency
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const topExt = sorted[0]?.[0];
+
+  const EXT_TO_LANG = {
+    '.js': 'JavaScript', '.jsx': 'JavaScript',
+    '.ts': 'TypeScript', '.tsx': 'TypeScript',
+    '.py': 'Python',
+    '.go': 'Go',
+    '.java': 'Java',
+    '.rb': 'Ruby',
+    '.rs': 'Rust',
+    '.cs': 'C#',
+    '.cpp': 'C++', '.cc': 'C++', '.cxx': 'C++',
+    '.c':  'C',
+    '.php': 'PHP',
+    '.kt': 'Kotlin',
+    '.swift': 'Swift'
+  };
+
+  return EXT_TO_LANG[topExt] || topExt || 'Unknown';
 }
 
+// ── Main coverage analyser ────────────────────────────────────────────────────
+
+/**
+ * Analyses the repo file tree and returns AST coverage data.
+ *
+ * @param {string[]}  fileTree   - list of all file paths in the repo
+ * @param {Function}  getContent - async (filePath) => string | null
+ * @returns {Object}  coverage result object
+ */
 async function findTestCoverage(fileTree, getContent) {
   const framework = detectTestFramework(fileTree);
-  const isPython  = framework === 'pytest' || fileTree.some(f => f.endsWith('.py'));
+  const language  = detectLanguage(fileTree);
 
-  // Choose source files based on repo language
-  const sourceFiles = isPython
-    ? fileTree.filter(isPySourceFile).slice(0, 40)
-    : fileTree.filter(isJsSourceFile).slice(0, 40);
+  // Pick the right analyser
+  const analyser = ANALYSERS.find(a => a.canHandle(fileTree));
 
-  const testFiles = fileTree.filter(isTestFile).slice(0, 40);
+  // If fallback was selected, report graceful degradation
+  const usingFallback = analyser === ANALYSERS[ANALYSERS.length - 1];
+  const fallbackMessage = usingFallback && analyser.getMessage
+    ? analyser.getMessage()
+    : null;
 
-  if (!babelParser && !isPython) {
-    return {
-      category: 'unit_test', severity: 'info',
-      message: 'AST analysis skipped — @babel/parser not installed.',
-      detail: `Framework detected: ${framework}. Run: cd backend && npm install @babel/parser`,
-      untestedFunctions: [],
-    };
+  const testPatterns = analyser.getTestPatterns();
+
+  // Separate source files from test files
+  const sourceFiles = fileTree.filter(f => {
+    const isTest = testPatterns.some(p => p.test(f));
+    const isConfig = /\.(json|md|yaml|yml|lock|toml|txt|env|gitignore)$/.test(f);
+    const isVendor = /node_modules|vendor|\.git/.test(f);
+    return !isTest && !isConfig && !isVendor;
+  });
+
+  const testFiles = fileTree.filter(f =>
+    testPatterns.some(p => p.test(f)) &&
+    !/node_modules|vendor|\.git/.test(f)
+  );
+
+  // Extract all function names from source files
+  const sourceFunctions = [];
+  for (const filePath of sourceFiles.slice(0, 60)) { // cap at 60 files for speed
+    const content = await getContent(filePath);
+    if (!content) continue;
+    const fns = analyser.extractFunctions(content);
+    for (const fn of fns) {
+      sourceFunctions.push({ name: fn, file: filePath });
+    }
   }
 
-  if (!sourceFiles.length) {
-    const allPy = fileTree.filter(f => f.endsWith('.py')).length;
-    const allJs = fileTree.filter(f => JS_EXTENSIONS.some(e => f.endsWith(e))).length;
-    return {
-      category: 'unit_test', severity: 'info',
-      message: `No analysable source files found. Repository has ${allPy} Python files and ${allJs} JS/TS files.`,
-      detail: `Framework detected: ${framework}. AST analysis covers JS/TS files via @babel/parser and Python files via regex extraction.`,
-      untestedFunctions: [],
-      sourceFilesAnalysed: 0,
-      testFilesAnalysed: testFiles.length,
-      coverage: null,
-    };
+  // Extract all function names referenced in test files
+  const testedNames = new Set();
+  for (const filePath of testFiles.slice(0, 30)) {
+    const content = await getContent(filePath);
+    if (!content) continue;
+    // For all languages: extract function names from test files using the analyser
+    // and also do a simple text search for function calls
+    const fns = analyser.extractFunctions(content);
+    fns.forEach(fn => testedNames.add(fn));
+
+    // Additionally scan test file content for any function name from source files
+    // This catches patterns like expect(calculateTotal(...)) or describe('calculateTotal')
+    for (const { name } of sourceFunctions) {
+      if (content.includes(name)) testedNames.add(name);
+    }
   }
 
-  // Extract function names from source files
-  const sourceFunctions = {};
-  for (const path of sourceFiles) {
-    try {
-      const content = await getContent(path);
-      if (!content) continue;
-      const fns = isPython ? parsePythonFile(content) : parseSourceFile(content);
-      for (const fn of fns) {
-        if (!sourceFunctions[fn]) sourceFunctions[fn] = [];
-        sourceFunctions[fn].push(path);
-      }
-    } catch (_) {}
-  }
-
-  // Collect all test content
-  let testContent = '';
-  for (const path of testFiles) {
-    try {
-      const content = await getContent(path);
-      if (content) testContent += '\n' + content;
-    } catch (_) {}
-  }
-
-  if (!testContent && testFiles.length === 0) {
-    return {
-      category: 'unit_test', severity: 'warn',
-      message: 'No test files found in the repository.',
-      detail: `Framework detected: ${framework}. Analysed ${sourceFiles.length} source files. No test directory or test files detected.`,
-      untestedFunctions: Object.keys(sourceFunctions).slice(0, 20),
-      sourceFilesAnalysed: sourceFiles.length,
-      testFilesAnalysed: 0,
-      coverage: 0,
-    };
-  }
-
-  const untested = [], tested = [];
-  for (const [fn] of Object.entries(sourceFunctions)) {
-    if (fn.length < 3) continue;
-    if (testContent.includes(fn)) tested.push(fn);
-    else untested.push(fn);
-  }
-
-  const totalFns = tested.length + untested.length;
-  const coverage = totalFns > 0 ? Math.round((tested.length / totalFns) * 100) : 0;
-  const severity = coverage >= 70 ? 'pass' : coverage >= 40 ? 'warn' : 'info';
+  // Categorise functions
+  const tested   = sourceFunctions.filter(f => testedNames.has(f.name));
+  const untested = sourceFunctions.filter(f => !testedNames.has(f.name));
+  const totalFns = sourceFunctions.length;
+  const coverage = totalFns > 0
+    ? Math.round((tested.length / totalFns) * 100)
+    : 0;
 
   return {
-    category: 'unit_test', severity,
-    message: `AST coverage: ${coverage}% of functions referenced in test files (${tested.length}/${totalFns}).`,
-    detail: `Framework detected: ${framework}. Analysed ${sourceFiles.length} source files and ${testFiles.length} test files. ${untested.length} functions appear untested: ${untested.slice(0, 10).join(', ')}${untested.length > 10 ? '...' : ''}.`,
-    untestedFunctions: untested.slice(0, 20),
-    testedFunctions: tested.slice(0, 20),
-    coverage,
-    sourceFilesAnalysed: sourceFiles.length,
-    testFilesAnalysed: testFiles.length,
+    framework,
+    language,
+    analyserUsed:  usingFallback ? 'fallback' : 'ast',
+    fallbackMessage,
+    totalFunctions: totalFns,
+    testedCount:    tested.length,
+    untestedCount:  untested.length,
+    coveragePercent: coverage,
+    testedFunctions:   tested.map(f => f.name),
+    untestedFunctions: untested.map(f => f.name),
+    testFileCount:  testFiles.length,
+    sourceFileCount: sourceFiles.length
   };
 }
 
-module.exports = { detectTestFramework, parseSourceFile, findTestCoverage };
+module.exports = { findTestCoverage, detectTestFramework, detectLanguage };
