@@ -3,7 +3,6 @@ import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
 import "./index.css";
 
-// Global error boundary to prevent blank screens
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -16,7 +15,7 @@ class ErrorBoundary extends React.Component {
     if (this.state.hasError) {
       return (
         <div style={{ minHeight:'100vh', background:'#06060e', color:'#f0f0ff', display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:16, padding:24 }}>
-          <div style={{ fontSize:40 }}>⚠️</div>
+          <div style={{ fontSize:40 }}>!</div>
           <div style={{ fontSize:20, fontWeight:700 }}>Something went wrong</div>
           <div style={{ fontSize:13, color:'#aaaac8', maxWidth:480, textAlign:'center', lineHeight:1.7 }}>
             {this.state.error?.message || 'Unknown error'}

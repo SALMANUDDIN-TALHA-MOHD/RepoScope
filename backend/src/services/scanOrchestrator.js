@@ -1,5 +1,5 @@
 /**
- * scanOrchestrator.js  —  Pluggable checks registry coordinator (Week 5 refactor)
+ * scanOrchestrator.js - Pluggable checks registry coordinator (Week 7 update)
  *
  * Architecture change from Week 4:
  *   Before:  scanOrchestrator called tddDetector and testAnalyser directly
@@ -13,14 +13,14 @@
  * push it to CHECKS_REGISTRY. Nothing else changes.
  *
  * Current registry:
- *   ✅ tdd          — default — TDD commit pattern + structural signal
- *   ✅ ast-coverage — default — AST-based function test coverage
- *   ☑  code-quality — optional — cyclomatic complexity (Week 5, user opt-in)
+ *   tdd              - default - TDD commit pattern + structural signal
+ *   ast-coverage     - default - AST-based function test coverage
+ *   code-quality     - optional - cyclomatic complexity (Week 5, user opt-in)
+ *   dependency-audit - default - known CVE check via OSV.dev (Week 6)
+ *   security         - default - OWASP patterns and secret detection (Week 7)
  *
- * Week 6+ additions will plug in here:
- *   ☑  dependency-audit — optional — known CVE check against NVD
- *   ☑  security         — optional — sensitive pattern / secret detection
- *   ☑  ai-summary       — optional — Gemini plain-English summary (Week 8)
+ * Week 8 addition will plug in here:
+ *   ai-summary - optional - Gemini plain-English summary
  */
 
 const https  = require('https');
@@ -30,7 +30,9 @@ const path   = require('path');
 const CHECKS_REGISTRY = [
   require('./checks/tddCheck'),
   require('./checks/astCoverage'),
-  require('./checks/codeQuality')  // optional — isDefault: false
+  require('./checks/codeQuality'),    // optional - isDefault: false
+  require('./checks/depAudit'),       // Week 6 - dependency vulnerability audit
+  require('./checks/securityScan'),   // Week 7 - OWASP patterns and secret detection
 ];
 
 // ── GitHub helpers ────────────────────────────────────────────────────────────
@@ -109,25 +111,25 @@ function makeContentFetcher(owner, repo, sha) {
   };
 }
 
-// ── Diagnostic tests (engine unit tests — always test our code, not the repo) ─
+// ── Diagnostic tests (engine unit tests - always test our code, not the repo) ─
 
 function runDiagnostics(tddModule) {
   const { isTestCommit, isTestCommitByFiles, isCodeCommit, analyse } = tddModule;
 
   const tests = [
     {
-      name: 'Test 1 — isTestCommit("add unit tests for login")',
+      name: 'Test 1 - isTestCommit("add unit tests for login")',
       pass: isTestCommit('add unit tests for login') === true
     },
     {
-      name: 'Test 2 — isTestCommit("implement user auth") returns false',
+      name: 'Test 2 - isTestCommit("implement user auth") returns false',
       pass: isTestCommit('implement user auth') === false
     },
     {
-      name: 'Test 3 — TDD ratio 100% (test before implementation, chronological)',
+      name: 'Test 3 - TDD ratio 100% (test before implementation, chronological)',
       pass: (() => {
         // GitHub newest-first: index 0 is newest, last index is oldest
-        // Chronological (after reverse): 'write tests' → 'implement' → 'write tests' → 'implement'
+        // Chronological (after reverse): 'write tests' -> 'implement' -> 'write tests' -> 'implement'
         const commits = [
           { message: 'implement payment logic' },   // newest (index 0)
           { message: 'write tests for payment' },   // middle
@@ -139,7 +141,7 @@ function runDiagnostics(tddModule) {
       })()
     },
     {
-      name: 'Test 4 — TDD ratio 0% (implementation before test)',
+      name: 'Test 4 - TDD ratio 0% (implementation before test)',
       pass: (() => {
         const commits = [
           { message: 'write tests for auth' },      // newest (index 0)
@@ -152,19 +154,19 @@ function runDiagnostics(tddModule) {
       })()
     },
     {
-      name: 'Test 5 — isCodeCommit("implement payment gateway")',
+      name: 'Test 5 - isCodeCommit("implement payment gateway")',
       pass: isCodeCommit('implement payment gateway') === true
     },
     {
-      name: 'Test 6 — isTestCommit("add unit tests") returns true',
+      name: 'Test 6 - isTestCommit("add unit tests") returns true',
       pass: isTestCommit('add unit tests') === true
     },
     {
-      name: 'Test 7 — isTestCommitByFiles detects test file paths',
+      name: 'Test 7 - isTestCommitByFiles detects test file paths',
       pass: isTestCommitByFiles(['src/__tests__/calculator.test.js', 'src/utils.js']) === true
     },
     {
-      name: 'Test 8 — isTestCommitByFiles returns false for non-test files',
+      name: 'Test 8 - isTestCommitByFiles returns false for non-test files',
       pass: isTestCommitByFiles(['src/index.js', 'src/routes/auth.js']) === false
     }
   ];
@@ -203,8 +205,8 @@ async function orchestrateScan(repoUrl, requestedChecks = []) {
   const commits = [...page1, ...page2];
 
   // ── Build file tree from the default branch's latest commit ──
-  const latestSha = commits[0]?.sha || defaultBranch;
-  const fileTree  = await buildFileTree(owner, repo, latestSha);
+  const latestSha  = commits[0]?.sha || defaultBranch;
+  const fileTree   = await buildFileTree(owner, repo, latestSha);
   const getContent = makeContentFetcher(owner, repo, latestSha);
 
   // ── Determine which checks to run ──
@@ -242,9 +244,11 @@ async function orchestrateScan(repoUrl, requestedChecks = []) {
     totalFiles:   fileTree.length,
 
     // Individual check results
-    tddAnalysis:     checkResults['tdd']          || null,
-    astCoverage:     checkResults['ast-coverage'] || null,
-    codeQuality:     checkResults['code-quality'] || null,   // null if not requested
+    tddAnalysis:      checkResults['tdd']               || null,
+    astCoverage:      checkResults['ast-coverage']      || null,
+    codeQuality:      checkResults['code-quality']      || null,   // null if not requested
+    dependencyAudit:  checkResults['Dependency Audit']  || null,   // Week 6
+    securityScan:     checkResults['Security Scan']     || null,   // Week 7
 
     // Which checks ran
     checksRun: checksToRun.map(c => c.name),
